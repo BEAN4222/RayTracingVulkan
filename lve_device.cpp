@@ -120,7 +120,6 @@ namespace lve {
         std::vector<VkPhysicalDevice> devices(deviceCount);
         vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
 
-        // 모든 GPU 정보 출력
         std::cout << "\nAvailable GPUs:" << std::endl;
         for (size_t i = 0; i < devices.size(); i++) {
             VkPhysicalDeviceProperties props;
@@ -133,7 +132,6 @@ namespace lve {
             std::cout << ")" << std::endl;
         }
 
-        // 1단계: Discrete GPU 중에서 찾기 (RTX 우선)
         for (const auto& device : devices) {
             VkPhysicalDeviceProperties props;
             vkGetPhysicalDeviceProperties(device, &props);
@@ -145,7 +143,6 @@ namespace lve {
             }
         }
 
-        // 2단계: Discrete GPU가 없으면 다른 GPU 중에서 찾기
         if (physicalDevice == VK_NULL_HANDLE) {
             for (const auto& device : devices) {
                 if (isDeviceSuitable(device)) {
@@ -183,6 +180,7 @@ namespace lve {
 
         VkPhysicalDeviceFeatures deviceFeatures = {};
         deviceFeatures.samplerAnisotropy = VK_TRUE;
+        deviceFeatures.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 
         VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};
         bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
@@ -206,17 +204,15 @@ namespace lve {
 
         VkDeviceCreateInfo createInfo = {};
         createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        createInfo.pNext = &deviceFeatures2;  // 중요: pNext에 피처 체인 연결!
+        createInfo.pNext = &deviceFeatures2;
 
         createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
         createInfo.pQueueCreateInfos = queueCreateInfos.data();
 
-        createInfo.pEnabledFeatures = nullptr;  // VkPhysicalDeviceFeatures2 사용하므로 nullptr로!
+        createInfo.pEnabledFeatures = nullptr;
         createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
         createInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
-        // might not really be necessary anymore because device specific validation layers
-        // have been deprecated
         if (enableValidationLayers) {
             createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
             createInfo.ppEnabledLayerNames = validationLayers.data();
@@ -262,7 +258,6 @@ namespace lve {
         VkPhysicalDeviceFeatures supportedFeatures;
         vkGetPhysicalDeviceFeatures(device, &supportedFeatures);
 
-        // Ray Tracing 피처 체크 추가
         VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeatures{};
         asFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
 
@@ -280,8 +275,8 @@ namespace lve {
             extensionsSupported &&
             swapChainAdequate &&
             supportedFeatures.samplerAnisotropy &&
-            asFeatures.accelerationStructure &&  // 추가
-            rtFeatures.rayTracingPipeline;        // 추가
+            asFeatures.accelerationStructure &&  
+            rtFeatures.rayTracingPipeline;        
     }
 
     void LveDevice::populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo) {
@@ -294,7 +289,7 @@ namespace lve {
             VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
         createInfo.pfnUserCallback = debugCallback;
-        createInfo.pUserData = nullptr;  // Optional
+        createInfo.pUserData = nullptr; 
     }
 
     void LveDevice::setupDebugMessenger() {
@@ -499,7 +494,6 @@ namespace lve {
         allocInfo.allocationSize = memRequirements.size;
         allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
 
-        // Buffer Device Address 플래그 추가
         VkMemoryAllocateFlagsInfo allocFlagsInfo{};
         if (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) {
             allocFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
@@ -550,8 +544,8 @@ namespace lve {
         VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
         VkBufferCopy copyRegion{};
-        copyRegion.srcOffset = 0;  // Optional
-        copyRegion.dstOffset = 0;  // Optional
+        copyRegion.srcOffset = 0; 
+        copyRegion.dstOffset = 0;
         copyRegion.size = size;
         vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
 

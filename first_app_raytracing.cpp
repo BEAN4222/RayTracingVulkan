@@ -1,19 +1,27 @@
 #include "first_app_raytracing.h"
 #include <stdexcept>
 #include <array>
+#include <glm.hpp>
 
 namespace lve {
 
     FirstAppRayTracing::FirstAppRayTracing() {
-        // Load function pointer
         vkCmdTraceRaysKHR = reinterpret_cast<PFN_vkCmdTraceRaysKHR>(
             vkGetDeviceProcAddr(lveDevice.device(), "vkCmdTraceRaysKHR"));
 
-        // Acceleration Structure 생성
+        // Acceleration Structure creation
         accelerationStructure = std::make_unique<LveAccelerationStructure>(lveDevice);
-        accelerationStructure->createTriangle();
 
-        // Ray Tracing Pipeline 생성
+        // Sphere mesh creation
+        accelerationStructure->addSphereMesh(
+            glm::vec3(0.0f, 0.0f, 0.0f),
+            glm::vec3(1.0f, 0.0f, 0.0f),
+            0.5f
+        );
+
+        accelerationStructure->buildAccelerationStructures();
+
+        // Ray Tracing Pipeline creation
         rayTracingPipeline = std::make_unique<LveRayTracingPipeline>(
             lveDevice,
             "shaders/raygen.rgen.spv",
@@ -26,7 +34,6 @@ namespace lve {
         createDescriptorSets();
         createCommandBuffers();
     }
-
     FirstAppRayTracing::~FirstAppRayTracing() {
         vkDestroyImageView(lveDevice.device(), storageImageView, nullptr);
         vkDestroyImage(lveDevice.device(), storageImage, nullptr);
@@ -59,7 +66,7 @@ namespace lve {
         imageInfo.extent.depth = 1;
         imageInfo.mipLevels = 1;
         imageInfo.arrayLayers = 1;
-        imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        imageInfo.format = VK_FORMAT_B8G8R8A8_UNORM;
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -73,12 +80,12 @@ namespace lve {
             storageImageMemory
         );
 
-        // Image View 생성
+        // Image View creation
         VkImageViewCreateInfo viewInfo{};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         viewInfo.image = storageImage;
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.format = VK_FORMAT_B8G8R8A8_UNORM;
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.baseMipLevel = 0;
         viewInfo.subresourceRange.levelCount = 1;
@@ -89,7 +96,7 @@ namespace lve {
             throw std::runtime_error("failed to create storage image view!");
         }
 
-        // Image Layout 전환
+        // Image Layout
         VkCommandBuffer commandBuffer = lveDevice.beginSingleTimeCommands();
 
         VkImageMemoryBarrier barrier{};
@@ -123,7 +130,7 @@ namespace lve {
     void FirstAppRayTracing::createDescriptorPool() {
         VkDescriptorPoolSize poolSizes[] = {
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
         };
 
         VkDescriptorPoolCreateInfo poolInfo{};
@@ -156,7 +163,7 @@ namespace lve {
         VkWriteDescriptorSetAccelerationStructureKHR asInfo{};
         asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
         asInfo.accelerationStructureCount = 1;
-        asInfo.pAccelerationStructures = &tlas;  // 수정: 변수에 저장 후 참조
+        asInfo.pAccelerationStructures = &tlas;
 
         VkWriteDescriptorSet asWrite{};
         asWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -178,7 +185,7 @@ namespace lve {
         imageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         imageWrite.pImageInfo = &imageInfo;
 
-        VkWriteDescriptorSet writes[] = { asWrite, imageWrite };
+        VkWriteDescriptorSet writes[] = { asWrite, imageWrite};
         vkUpdateDescriptorSets(lveDevice.device(), 2, writes, 0, nullptr);
     }
 
@@ -217,7 +224,6 @@ namespace lve {
             0, 1, &descriptorSet, 0, nullptr
         );
 
-        // 임시 객체 문제 해결: 변수에 먼저 저장
         VkStridedDeviceAddressRegionKHR raygenRegion = rayTracingPipeline->getRaygenRegion();
         VkStridedDeviceAddressRegionKHR missRegion = rayTracingPipeline->getMissRegion();
         VkStridedDeviceAddressRegionKHR hitRegion = rayTracingPipeline->getHitRegion();
@@ -234,7 +240,7 @@ namespace lve {
             1
         );
 
-        // Storage image를 swap chain image로 복사
+        // Copy Storage image to swap chain image
         VkImageMemoryBarrier barrier1{};
         barrier1.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier1.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -260,7 +266,7 @@ namespace lve {
             1, &barrier1
         );
 
-        VkImage swapChainImage = lveSwapChain.getSwapChainImage(imageIndex);  // 수정!
+        VkImage swapChainImage = lveSwapChain.getSwapChainImage(imageIndex);
 
         VkImageMemoryBarrier barrier2{};
         barrier2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -366,6 +372,7 @@ namespace lve {
         if (result != VK_SUCCESS) {
             throw std::runtime_error("failed to present swap chain image!");
         }
+        vkQueueWaitIdle(lveDevice.presentQueue());
     }
 
 } // namespace lve

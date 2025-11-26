@@ -42,7 +42,7 @@ namespace lve {
     }
 
     void LveRayTracingPipeline::createPipelineLayout() {
-        // Descriptor Set Layout (TLAS와 storage image용)
+        // Descriptor Set Layout
         VkDescriptorSetLayoutBinding accelerationStructureBinding{};
         accelerationStructureBinding.binding = 0;
         accelerationStructureBinding.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
@@ -62,7 +62,7 @@ namespace lve {
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 2;
+        layoutInfo.bindingCount = 2; 
         layoutInfo.pBindings = bindings;
 
         if (vkCreateDescriptorSetLayout(lveDevice.device(), &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
@@ -173,12 +173,10 @@ namespace lve {
         const uint32_t baseAlignment = rtProperties.shaderGroupBaseAlignment;
         const uint32_t groupCount = 3;
 
-        // ✅ 디버깅: 값 출력
         std::cout << "handleSize: " << handleSize << std::endl;
         std::cout << "handleAlignment: " << handleAlignment << std::endl;
         std::cout << "baseAlignment: " << baseAlignment << std::endl;
 
-        // ✅ handleSize를 baseAlignment로 정렬 (중요!)
         const uint32_t handleSizeAligned = (handleSize + baseAlignment - 1) & ~(baseAlignment - 1);
         std::cout << "handleSizeAligned: " << handleSizeAligned << std::endl;
 
@@ -195,10 +193,9 @@ namespace lve {
             throw std::runtime_error("failed to get ray tracing shader group handles!");
         }
 
-        // ✅ 버퍼 크기 = aligned size * groupCount
         const uint32_t sbtSize = handleSizeAligned * groupCount;
 
-        // ✅ SBT Buffer 생성
+        // SBT Buffer creation
         lveDevice.createBuffer(
             sbtSize,
             VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -207,12 +204,10 @@ namespace lve {
             sbtMemory
         );
 
-        // ✅ 데이터를 aligned 위치에 복사
         void* mapped;
         vkMapMemory(lveDevice.device(), sbtMemory, 0, sbtSize, 0, &mapped);
         auto* pData = reinterpret_cast<uint8_t*>(mapped);
 
-        // 각 handle을 aligned offset에 복사
         for (uint32_t i = 0; i < groupCount; i++) {
             memcpy(pData + i * handleSizeAligned,
                 shaderHandleStorage.data() + i * handleSize,
@@ -221,24 +216,21 @@ namespace lve {
 
         vkUnmapMemory(lveDevice.device(), sbtMemory);
 
-        // ✅ Get buffer device address
+        // Get buffer device address
         VkBufferDeviceAddressInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
         bufferInfo.buffer = sbtBuffer;
         VkDeviceAddress sbtAddress = vkGetBufferDeviceAddressKHR(lveDevice.device(), &bufferInfo);
 
-        // ✅ 디버깅: 주소 출력
         std::cout << "sbtAddress: " << sbtAddress << std::endl;
         std::cout << "sbtAddress % 64: " << (sbtAddress % 64) << std::endl;
 
-        // ✅ 주소가 64의 배수가 아니면 에러!
         if (sbtAddress % baseAlignment != 0) {
             std::cerr << "ERROR: SBT buffer address not aligned!" << std::endl;
-            // 수동 정렬 필요
             throw std::runtime_error("SBT buffer address not aligned to baseAlignment!");
         }
 
-        // ✅ Setup regions
+        // Setup regions
         raygenRegion.deviceAddress = sbtAddress;
         raygenRegion.stride = handleSizeAligned;
         raygenRegion.size = handleSizeAligned;
@@ -253,7 +245,6 @@ namespace lve {
 
         callableRegion = {};
 
-        // ✅ 디버깅: region 주소 출력
         std::cout << "raygenRegion.deviceAddress: " << raygenRegion.deviceAddress << std::endl;
         std::cout << "missRegion.deviceAddress: " << missRegion.deviceAddress << std::endl;
         std::cout << "hitRegion.deviceAddress: " << hitRegion.deviceAddress << std::endl;
