@@ -13,9 +13,22 @@ namespace lve {
         glm::vec3 pos;
         glm::vec3 normal;
         glm::vec3 color;
+        float materialType;  // 0=Lambertian, 1=Metal, 2=Dielectric
+        float materialParam; // Metal: fuzz, Dielectric: refraction_index
+        float padding[2];    // Alignment to 16 bytes
     };
 
-    // structure storing mesh data
+    // Sphere info for shader (std430 layout compatible)
+    struct SphereInfo {
+        glm::vec3 center;
+        float radius;
+        glm::vec3 color;
+        float materialType;
+        float materialParam;
+        float padding[3];  // Align to 16 bytes (48 bytes total)
+    };
+
+    // Structure storing mesh data (단위 구 하나만 사용)
     struct MeshData {
         std::vector<Vertex> vertices;
         std::vector<uint32_t> indices;
@@ -38,9 +51,9 @@ namespace lve {
         LveAccelerationStructure(const LveAccelerationStructure&) = delete;
         LveAccelerationStructure& operator=(const LveAccelerationStructure&) = delete;
 
-        // mesh creatin function
-        void addTriangle(const glm::vec3& color);
+        // Sphere 추가 (메시 생성 없이 정보만 저장)
         void addSphereMesh(const glm::vec3& center, const glm::vec3& color, float radius,
+            float materialType = 0.0f, float materialParam = 0.0f,
             int segments = 32, int rings = 16);
 
         // Acceleration Structure build
@@ -48,29 +61,43 @@ namespace lve {
 
         VkAccelerationStructureKHR getTLAS() const { return topLevelAS; }
 
-    private:
-        //helper function for sphere mesh
-        MeshData createSphereMeshData(const glm::vec3& center, const glm::vec3& color,
-            float radius, int segments, int rings);
+        // Sphere info buffer for shader access
+        VkBuffer getSphereInfoBuffer() const { return sphereInfoBuffer; }
+        uint32_t getSphereCount() const { return static_cast<uint32_t>(sphereInfos.size()); }
 
-        // upload mesh to GPU buffer
+    private:
+        // Helper function for sphere mesh (단위 구 생성용)
+        MeshData createSphereMeshData(int segments, int rings);
+
+        // Upload mesh to GPU buffer
         void uploadMeshToGPU(MeshData& mesh);
 
-        // create each mesh of BLAS
+        // Create BLAS for unit sphere (하나만!)
         void createBottomLevelAS(MeshData& mesh);
 
-        // create TLAS containing all meshes
+        // Create TLAS with instancing
         void createTopLevelAS();
+
+        // Create sphere info buffer for shader
+        void createSphereInfoBuffer();
 
         LveDevice& lveDevice;
 
-        // storing meshes
-        std::vector<MeshData> meshes;
+        // 단위 구 BLAS (원점, 반지름 1) - 하나만!
+        MeshData unitSphereMesh;
+        bool unitSphereCreated = false;
+
+        // 모든 구의 정보 (위치, 크기, 재질 등)
+        std::vector<SphereInfo> sphereInfos;
 
         // Top-Level Acceleration Structure
         VkAccelerationStructureKHR topLevelAS = VK_NULL_HANDLE;
         VkBuffer topLevelASBuffer = VK_NULL_HANDLE;
         VkDeviceMemory topLevelASMemory = VK_NULL_HANDLE;
+
+        // Sphere info buffer
+        VkBuffer sphereInfoBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory sphereInfoMemory = VK_NULL_HANDLE;
 
         // Ray Tracing function pointers
         PFN_vkGetBufferDeviceAddressKHR vkGetBufferDeviceAddressKHR;

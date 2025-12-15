@@ -21,6 +21,9 @@ namespace lve {
 		int getWidth() { return width; }
 		int getHeight() { return height; }
 
+		// For input handling
+		GLFWwindow* getGLFWwindow() const { return window; }
+
 	private:
 		void initWindow();
 

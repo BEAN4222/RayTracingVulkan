@@ -1,4 +1,4 @@
-#include "lve_ray_tracing_pipeline.h"
+﻿#include "lve_ray_tracing_pipeline.h"
 #include <fstream>
 #include <stdexcept>
 #include <cstring>
@@ -42,38 +42,56 @@ namespace lve {
     }
 
     void LveRayTracingPipeline::createPipelineLayout() {
-        // Descriptor Set Layout
+        // Binding 0: Acceleration Structure (raygen)
         VkDescriptorSetLayoutBinding accelerationStructureBinding{};
         accelerationStructureBinding.binding = 0;
         accelerationStructureBinding.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
         accelerationStructureBinding.descriptorCount = 1;
         accelerationStructureBinding.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 
+        // Binding 1: Storage Image (raygen)
         VkDescriptorSetLayoutBinding storageImageBinding{};
         storageImageBinding.binding = 1;
         storageImageBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         storageImageBinding.descriptorCount = 1;
         storageImageBinding.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 
+        // Binding 2: Sphere Info Buffer (closest hit)
+        VkDescriptorSetLayoutBinding sphereInfoBinding{};
+        sphereInfoBinding.binding = 2;
+        sphereInfoBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        sphereInfoBinding.descriptorCount = 1;
+        sphereInfoBinding.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+
+        // Binding 3 (UBO) 삭제됨!
         VkDescriptorSetLayoutBinding bindings[] = {
             accelerationStructureBinding,
-            storageImageBinding
+            storageImageBinding,
+            sphereInfoBinding
         };
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 2; 
+        layoutInfo.bindingCount = 3;  // 4 → 3
         layoutInfo.pBindings = bindings;
 
         if (vkCreateDescriptorSetLayout(lveDevice.device(), &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create descriptor set layout!");
         }
 
+        // Push Constants Range 추가!
+        VkPushConstantRange pushConstantRange{};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        pushConstantRange.offset = 0;
+        pushConstantRange.size = 80;  // sizeof(CameraPushConstants): 4 * vec3(16) + 4 * float(4) = 80 bytes
+
         // Pipeline Layout
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutInfo.setLayoutCount = 1;
         pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+        pipelineLayoutInfo.pushConstantRangeCount = 1;           // 추가!
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;  // 추가!
 
         if (vkCreatePipelineLayout(lveDevice.device(), &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create pipeline layout!");
@@ -85,7 +103,6 @@ namespace lve {
         const std::string& missShader,
         const std::string& closestHitShader
     ) {
-        // Shader stages
         auto raygenCode = readFile(raygenShader);
         auto missCode = readFile(missShader);
         auto chitCode = readFile(closestHitShader);
@@ -114,7 +131,6 @@ namespace lve {
 
         VkPipelineShaderStageCreateInfo stages[] = { raygenStage, missStage, chitStage };
 
-        // Shader groups
         VkRayTracingShaderGroupCreateInfoKHR raygenGroup{};
         raygenGroup.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
         raygenGroup.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
@@ -141,14 +157,13 @@ namespace lve {
 
         VkRayTracingShaderGroupCreateInfoKHR groups[] = { raygenGroup, missGroup, hitGroup };
 
-        // Pipeline create info
         VkRayTracingPipelineCreateInfoKHR pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
         pipelineInfo.stageCount = 3;
         pipelineInfo.pStages = stages;
         pipelineInfo.groupCount = 3;
         pipelineInfo.pGroups = groups;
-        pipelineInfo.maxPipelineRayRecursionDepth = 1;
+        pipelineInfo.maxPipelineRayRecursionDepth = 10;
         pipelineInfo.layout = pipelineLayout;
 
         if (vkCreateRayTracingPipelinesKHR(
@@ -180,7 +195,6 @@ namespace lve {
         const uint32_t handleSizeAligned = (handleSize + baseAlignment - 1) & ~(baseAlignment - 1);
         std::cout << "handleSizeAligned: " << handleSizeAligned << std::endl;
 
-        // Get shader group handles
         const uint32_t dataSize = groupCount * handleSize;
         std::vector<uint8_t> shaderHandleStorage(dataSize);
         if (vkGetRayTracingShaderGroupHandlesKHR(
@@ -195,7 +209,6 @@ namespace lve {
 
         const uint32_t sbtSize = handleSizeAligned * groupCount;
 
-        // SBT Buffer creation
         lveDevice.createBuffer(
             sbtSize,
             VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -216,7 +229,6 @@ namespace lve {
 
         vkUnmapMemory(lveDevice.device(), sbtMemory);
 
-        // Get buffer device address
         VkBufferDeviceAddressInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
         bufferInfo.buffer = sbtBuffer;
@@ -230,7 +242,6 @@ namespace lve {
             throw std::runtime_error("SBT buffer address not aligned to baseAlignment!");
         }
 
-        // Setup regions
         raygenRegion.deviceAddress = sbtAddress;
         raygenRegion.stride = handleSizeAligned;
         raygenRegion.size = handleSizeAligned;
