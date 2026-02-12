@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "lve_device.h"
 #include <vector>
@@ -28,7 +28,7 @@ namespace lve {
         float padding[3];  // Align to 16 bytes (48 bytes total)
     };
 
-    // Structure storing mesh data (단위 구 하나만 사용)
+    // Structure storing mesh data (ë‹¨ìœ„ êµ¬ í•˜ë‚˜ë§Œ ì‚¬ìš©)
     struct MeshData {
         std::vector<Vertex> vertices;
         std::vector<uint32_t> indices;
@@ -51,7 +51,7 @@ namespace lve {
         LveAccelerationStructure(const LveAccelerationStructure&) = delete;
         LveAccelerationStructure& operator=(const LveAccelerationStructure&) = delete;
 
-        // Sphere 추가 (메시 생성 없이 정보만 저장)
+        // Sphere ì¶”ê°€ (ë©”ì‹œ ìƒì„± ì—†ì´ ì •ë³´ë§Œ ì €ìž¥)
         void addSphereMesh(const glm::vec3& center, const glm::vec3& color, float radius,
             float materialType = 0.0f, float materialParam = 0.0f,
             int segments = 32, int rings = 16);
@@ -65,14 +65,21 @@ namespace lve {
         VkBuffer getSphereInfoBuffer() const { return sphereInfoBuffer; }
         uint32_t getSphereCount() const { return static_cast<uint32_t>(sphereInfos.size()); }
 
+        // =========================================================================
+        // Buffer accessors for ray tracing descriptor sets
+        // =========================================================================
+        VkBuffer getVertexBuffer() const { return unitSphereMesh.vertexBuffer; }
+        VkBuffer getIndexBuffer() const { return unitSphereMesh.indexBuffer; }
+        VkBuffer getMeshInfoBuffer() const { return sphereInfoBuffer; }
+
     private:
-        // Helper function for sphere mesh (단위 구 생성용)
+        // Helper function for sphere mesh (ë‹¨ìœ„ êµ¬ ìƒì„±ìš©)
         MeshData createSphereMeshData(int segments, int rings);
 
         // Upload mesh to GPU buffer
         void uploadMeshToGPU(MeshData& mesh);
 
-        // Create BLAS for unit sphere (하나만!)
+        // Create BLAS for unit sphere (í•˜ë‚˜ë§Œ!)
         void createBottomLevelAS(MeshData& mesh);
 
         // Create TLAS with instancing
@@ -83,11 +90,11 @@ namespace lve {
 
         LveDevice& lveDevice;
 
-        // 단위 구 BLAS (원점, 반지름 1) - 하나만!
+        // ë‹¨ìœ„ êµ¬ BLAS (ì›ì , ë°˜ì§€ë¦„ 1) - í•˜ë‚˜ë§Œ!
         MeshData unitSphereMesh;
         bool unitSphereCreated = false;
 
-        // 모든 구의 정보 (위치, 크기, 재질 등)
+        // ëª¨ë“  êµ¬ì˜ ì •ë³´ (ìœ„ì¹˜, í¬ê¸°, ìž¬ì§ˆ ë“±)
         std::vector<SphereInfo> sphereInfos;
 
         // Top-Level Acceleration Structure

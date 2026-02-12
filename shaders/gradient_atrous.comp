@@ -1,0 +1,286 @@
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Input/Output gradient
+layout(binding = 0, rg16f) uniform readonly image2D gradientInput;
+layout(binding = 1, rg16f) uniform writeonly image2D gradientOutput;
+
+// Visibility Buffer for edge-stopping
+layout(binding = 2, rg32ui) uniform readonly uimage2D visibilityBuffer;
+
+// Sphere Info Buffer for surface reconstruction
+struct SphereInfo {
+    vec3 center;
+    float radius;
+    vec3 color;
+    float materialType;
+    float materialParam;
+    float padding1;
+    float padding2;
+    float padding3;
+};
+
+layout(binding = 3, std430) readonly buffer SphereInfoBuffer {
+    SphereInfo spheres[];
+};
+
+// Camera UBO for reconstruction
+layout(binding = 4) uniform CameraUBO {
+    mat4 viewMatrix;
+    mat4 projMatrix;
+    mat4 viewProjMatrix;
+    mat4 invViewProjMatrix;
+    mat4 prevViewProjMatrix;
+
+    vec4 cameraPos;
+    vec4 cameraFront;
+    vec4 cameraUp;
+    vec4 cameraRight;
+    vec4 frustumInfo;
+
+    vec4 prevCameraPos;
+    vec4 prevCameraFront;
+    vec4 prevCameraUp;
+    vec4 prevCameraRight;
+
+    vec4 resolution;
+} camera;
+
+// Push constants
+layout(push_constant) uniform PushConstants {
+    vec4 resolution;
+    int stepSize;
+    float sigmaDepth;
+    float sigmaNormal;
+    float padding;
+} params;
+
+// ============================================
+// NaN protection functions
+// ============================================
+bool isNaN(float x) {
+    return x != x;
+}
+
+bool isNaN(vec3 v) {
+    return isNaN(v.x) || isNaN(v.y) || isNaN(v.z);
+}
+
+bool isInf(vec3 v) {
+    return isinf(v.x) || isinf(v.y) || isinf(v.z);
+}
+
+bool isValid(float x) {
+    return !isNaN(x) && !isinf(x);
+}
+
+bool isValid(vec3 v) {
+    return !isNaN(v) && !isInf(v);
+}
+
+float sanitize(float x, float fallback) {
+    return isValid(x) ? x : fallback;
+}
+
+vec3 safeNormalize(vec3 v, vec3 fallback) {
+    float len = length(v);
+    if (len < 1e-8 || !isValid(len)) {
+        return fallback;
+    }
+    return v / len;
+}
+
+// Ã€-Trous wavelet kernel weights (5x5 B3 spline)
+const float kernelWeights[25] = float[25](
+    1.0/256.0,  4.0/256.0,  6.0/256.0,  4.0/256.0, 1.0/256.0,
+    4.0/256.0, 16.0/256.0, 24.0/256.0, 16.0/256.0, 4.0/256.0,
+    6.0/256.0, 24.0/256.0, 36.0/256.0, 24.0/256.0, 6.0/256.0,
+    4.0/256.0, 16.0/256.0, 24.0/256.0, 16.0/256.0, 4.0/256.0,
+    1.0/256.0,  4.0/256.0,  6.0/256.0,  4.0/256.0, 1.0/256.0
+);
+
+const ivec2 offsets[25] = ivec2[25](
+    ivec2(-2, -2), ivec2(-1, -2), ivec2(0, -2), ivec2(1, -2), ivec2(2, -2),
+    ivec2(-2, -1), ivec2(-1, -1), ivec2(0, -1), ivec2(1, -1), ivec2(2, -1),
+    ivec2(-2,  0), ivec2(-1,  0), ivec2(0,  0), ivec2(1,  0), ivec2(2,  0),
+    ivec2(-2,  1), ivec2(-1,  1), ivec2(0,  1), ivec2(1,  1), ivec2(2,  1),
+    ivec2(-2,  2), ivec2(-1,  2), ivec2(0,  2), ivec2(1,  2), ivec2(2,  2)
+);
+
+bool isValidCoord(ivec2 coord, ivec2 size) {
+    return coord.x >= 0 && coord.x < size.x && coord.y >= 0 && coord.y < size.y;
+}
+
+// ============================================
+// Surface reconstruction from Visibility Buffer
+// ============================================
+struct SurfaceData {
+    vec3 worldPos;
+    vec3 normal;
+    float hitT;
+    uint instanceId;
+    bool valid;
+};
+
+SurfaceData reconstructSurface(ivec2 pixelCoord, ivec2 size) {
+    SurfaceData data;
+    data.valid = false;
+    
+    uvec4 visData = imageLoad(visibilityBuffer, pixelCoord);
+    data.instanceId = visData.x;
+    data.hitT = uintBitsToFloat(visData.y);
+    
+    if (data.instanceId == 0xFFFFFFFF || data.hitT < 0.0 || !isValid(data.hitT)) {
+        return data;
+    }
+    
+    vec2 uv = (vec2(pixelCoord) + 0.5) / vec2(size);
+
+    vec3 w = normalize(-camera.cameraFront.xyz);
+    vec3 u = normalize(camera.cameraRight.xyz);
+    vec3 v = normalize(camera.cameraUp.xyz);
+    vec3 origin = camera.cameraPos.xyz;
+
+    float viewport_width = camera.frustumInfo.x;
+    float viewport_height = camera.frustumInfo.y;
+    float focusDist = camera.frustumInfo.z;
+
+    vec3 horizontal = viewport_width * u;
+    vec3 vertical = viewport_height * v;
+    vec3 lower_left_corner = origin - horizontal / 2.0 - vertical / 2.0 - focusDist * w;
+
+    vec3 rayDir = lower_left_corner + uv.x * horizontal + (1.0 - uv.y) * vertical - origin;
+    data.worldPos = origin + rayDir * data.hitT;
+    
+    if (!isValid(data.worldPos)) {
+        return data;
+    }
+    
+    // Reconstruct normal from sphere geometry
+    if (data.instanceId < 10000u) {
+        SphereInfo sphere = spheres[data.instanceId];
+        vec3 toSurface = data.worldPos - sphere.center;
+        float dist = length(toSurface);
+        
+        if (dist > 1e-6) {
+            data.normal = toSurface / dist;
+        } else {
+            data.normal = vec3(0.0, 1.0, 0.0);
+        }
+    } else {
+        data.normal = vec3(0.0, 1.0, 0.0);
+    }
+    
+    data.valid = true;
+    return data;
+}
+
+// Edge-stopping function for depth
+float edgeStoppingDepth(float centerDepth, float sampleDepth, ivec2 offset) {
+    if (centerDepth < 0.0 || sampleDepth < 0.0) return 0.0;
+    if (!isValid(centerDepth) || !isValid(sampleDepth)) return 0.0;
+    
+    float depthDiff = abs(centerDepth - sampleDepth);
+    float depthGradient = max(abs(float(offset.x)), abs(float(offset.y))) * float(params.stepSize);
+    
+    float sigma = params.sigmaDepth * centerDepth * max(depthGradient, 1.0);
+    sigma = max(sigma, 1e-6);
+    
+    float result = exp(-depthDiff / sigma);
+    return sanitize(result, 0.0);
+}
+
+// Edge-stopping function for normal
+float edgeStoppingNormal(vec3 centerNormal, vec3 sampleNormal) {
+    if (!isValid(centerNormal) || !isValid(sampleNormal)) return 0.0;
+    
+    float dotProduct = max(dot(centerNormal, sampleNormal), 0.0);
+    dotProduct = clamp(dotProduct, 0.0, 1.0);
+    
+    float angle = acos(dotProduct);
+    
+    float sigmaNormalSq = params.sigmaNormal * params.sigmaNormal;
+    if (sigmaNormalSq < 1e-8) return 1.0;
+    
+    float result = exp(-angle * angle / sigmaNormalSq);
+    return sanitize(result, 0.0);
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = ivec2(params.resolution.xy);
+    
+    // Bounds check
+    if (pixelCoord.x >= size.x || pixelCoord.y >= size.y) {
+        return;
+    }
+    
+    // Reconstruct center surface
+    SurfaceData centerSurface = reconstructSurface(pixelCoord, size);
+    
+    // If no geometry, output zero gradient
+    if (!centerSurface.valid) {
+        imageStore(gradientOutput, pixelCoord, vec4(0.0));
+        return;
+    }
+    
+    // Ã€-Trous filtering of gradient
+    float gradientSum = 0.0;
+    float weightSum = 0.0;
+    
+    for (int i = 0; i < 25; i++) {
+        ivec2 offset = offsets[i] * params.stepSize;
+        ivec2 sampleCoord = pixelCoord + offset;
+        
+        // Skip out-of-bounds samples
+        if (!isValidCoord(sampleCoord, size)) {
+            continue;
+        }
+        
+        // Reconstruct sample surface
+        SurfaceData sampleSurface = reconstructSurface(sampleCoord, size);
+        
+        // Skip samples with no geometry
+        if (!sampleSurface.valid) {
+            continue;
+        }
+        
+        // Load gradient data
+        vec2 gradientData = imageLoad(gradientInput, sampleCoord).xy;
+        float gradient = sanitize(gradientData.x, 0.0);
+        float sampleWeight = sanitize(gradientData.y, 0.0);
+        
+        // Skip samples with no gradient information
+        if (sampleWeight <= 0.0) {
+            continue;
+        }
+        
+        // Kernel weight
+        float kernelWeight = kernelWeights[i];
+        
+        // Edge-stopping weights
+        float wDepth = edgeStoppingDepth(centerSurface.hitT, sampleSurface.hitT, offsets[i]);
+        float wNormal = edgeStoppingNormal(centerSurface.normal, sampleSurface.normal);
+        
+        float weight = kernelWeight * wDepth * wNormal * sampleWeight;
+        weight = sanitize(weight, 0.0);
+        
+        gradientSum += gradient * weight;
+        weightSum += weight;
+    }
+    
+    // Normalize
+    float filteredGradient = 0.0;
+    if (weightSum > 1e-6) {
+        filteredGradient = gradientSum / weightSum;
+    }
+    
+    // NaN protection and clamp
+    filteredGradient = sanitize(filteredGradient, 0.0);
+    filteredGradient = clamp(filteredGradient, 0.0, 1.0);
+    
+    // Output: gradient value and weight
+    float outputWeight = (weightSum > 1e-6) ? 1.0 : 0.0;
+    imageStore(gradientOutput, pixelCoord, vec4(filteredGradient, outputWeight, 0.0, 0.0));
+}

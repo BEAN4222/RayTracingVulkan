@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "lve_device.h"
 #include <string>
@@ -21,12 +21,19 @@ namespace lve {
 
         VkPipeline getPipeline() const { return pipeline; }
         VkPipelineLayout getPipelineLayout() const { return pipelineLayout; }
-        VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }  // 추가!
+        VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
 
+        // SBT Region getters (original names)
         VkStridedDeviceAddressRegionKHR getRaygenRegion() const { return raygenRegion; }
         VkStridedDeviceAddressRegionKHR getMissRegion() const { return missRegion; }
         VkStridedDeviceAddressRegionKHR getHitRegion() const { return hitRegion; }
         VkStridedDeviceAddressRegionKHR getCallableRegion() const { return callableRegion; }
+
+        // SBT Region getters (alternative names for compatibility)
+        const VkStridedDeviceAddressRegionKHR& getRaygenSBTRegion() const { return raygenRegion; }
+        const VkStridedDeviceAddressRegionKHR& getMissSBTRegion() const { return missRegion; }
+        const VkStridedDeviceAddressRegionKHR& getHitSBTRegion() const { return hitRegion; }
+        const VkStridedDeviceAddressRegionKHR& getCallableSBTRegion() const { return callableRegion; }
 
     private:
         void createPipelineLayout();

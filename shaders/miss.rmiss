@@ -1,30 +1,31 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 
-// Payload structure (must match raygen and closesthit)
+// Extended ray payload (must match raygen and closesthit)
 struct RayPayload {
-    vec3 color;           // Attenuation or final color
-    vec3 origin;          // Next ray origin
-    vec3 direction;       // Next ray direction
-    uint seed;            // Random seed
-    bool hit;             // Did we hit something?
-    bool scattered;       // Should we continue tracing?
+    vec3 color;
+    vec3 origin;
+    vec3 direction;
+    uint seed;
+    bool hit;
+    bool scattered;
+    vec3 worldPosition;
+    vec3 worldNormal;
+    uint instanceId;
+    float hitT;
 };
 
 layout(location = 0) rayPayloadInEXT RayPayload payload;
 
 void main() {
-    // From camera.h ray_color:
-    // if (!world.hit(r, interval(0.001, infinity), rec))
-    //     return background;
+    payload.hit = false;
+    payload.scattered = false;
     
-    // Also from the commented code:
-    // vec3 unit_direction = unit_vector(r.direction());
-    // auto a = 0.5 * (unit_direction.y() + 1.0);
-    // return (1.0 - a) * color(1.0, 1.0, 1.0) + a * color(0.5, 0.7, 1.0);
-    
-    payload.hit = false; // We didn't hit anything
-    payload.scattered = false; // No scattering (ray terminates)
+    // Clear G-buffer data for miss
+    payload.worldPosition = vec3(0.0);
+    payload.worldNormal = vec3(0.0);
+    payload.instanceId = 0xFFFFFFFF;
+    payload.hitT = -1.0;
     
     // Sky gradient background
     vec3 unit_direction = normalize(gl_WorldRayDirectionEXT);

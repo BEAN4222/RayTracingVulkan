@@ -1,0 +1,275 @@
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// binding 0: input color (rgb) + variance (a)
+layout(binding = 0, rgba16f) uniform readonly image2D inputColor;
+// binding 1: output color (rgb) + variance (a)
+layout(binding = 1, rgba16f) uniform writeonly image2D outputColor;
+
+// Visibility Buffer
+layout(binding = 2, rg32ui) uniform readonly uimage2D visibilityBuffer;
+
+// Moments buffer (used only on first iteration for initial variance)
+layout(binding = 3, rg32f) uniform readonly image2D momentsBuffer;
+
+// Sphere Info Buffer for surface reconstruction
+struct SphereInfo {
+    vec3 center;
+    float radius;
+    vec3 color;
+    float materialType;
+    float materialParam;
+    float padding1;
+    float padding2;
+    float padding3;
+};
+
+layout(binding = 4, std430) readonly buffer SphereInfoBuffer {
+    SphereInfo spheres[];
+};
+
+layout(binding = 5) uniform CameraUBO {
+    mat4 viewMatrix;
+    mat4 projMatrix;
+    mat4 viewProjMatrix;
+    mat4 invViewProjMatrix;
+    mat4 prevViewProjMatrix;
+
+    vec4 cameraPos;
+    vec4 cameraFront;
+    vec4 cameraUp;
+    vec4 cameraRight;
+    vec4 frustumInfo;
+
+    vec4 prevCameraPos;
+    vec4 prevCameraFront;
+    vec4 prevCameraUp;
+    vec4 prevCameraRight;
+
+    vec4 resolution;
+} camera;
+
+layout(push_constant) uniform PushConstants {
+    vec4 resolution;
+    int stepSize;
+    float sigmaLuminance;
+    float sigmaDepth;
+    float sigmaNormal;
+    float padding1;
+    float padding2;
+    float padding3;
+    float padding4;
+} params;
+
+// 3x3 Gaussian kernel for variance filtering
+const float gaussian_kernel[3][3] = {
+    { 1.0 / 16.0, 1.0 / 8.0, 1.0 / 16.0 },
+    { 1.0 / 8.0,  1.0 / 4.0, 1.0 / 8.0  },
+    { 1.0 / 16.0, 1.0 / 8.0, 1.0 / 16.0 }
+};
+
+bool isNaN(float x) { return x != x; }
+bool isValid(float x) { return !isNaN(x) && !isinf(x); }
+bool isValid(vec3 v) {
+    return !isNaN(v.x) && !isNaN(v.y) && !isNaN(v.z) &&
+           !isinf(v.x) && !isinf(v.y) && !isinf(v.z);
+}
+
+float luminance(vec3 color) {
+    return dot(color, vec3(0.299, 0.587, 0.114));
+}
+
+bool isValidCoord(ivec2 coord, ivec2 size) {
+    return coord.x >= 0 && coord.x < size.x && coord.y >= 0 && coord.y < size.y;
+}
+
+struct SurfaceData {
+    vec3 worldPos;
+    vec3 normal;
+    float hitT;
+    uint instanceId;
+    bool valid;
+};
+
+SurfaceData reconstructSurface(ivec2 pixelCoord, ivec2 size) {
+    SurfaceData data;
+    data.valid = false;
+
+    uvec4 visData = imageLoad(visibilityBuffer, pixelCoord);
+    data.instanceId = visData.x;
+    data.hitT = uintBitsToFloat(visData.y);
+
+    if (data.instanceId == 0xFFFFFFFF || data.hitT < 0.0 || !isValid(data.hitT)) {
+        return data;
+    }
+
+    vec2 uv = (vec2(pixelCoord) + 0.5) / vec2(size);
+
+    vec3 w = normalize(-camera.cameraFront.xyz);
+    vec3 u = normalize(camera.cameraRight.xyz);
+    vec3 v = normalize(camera.cameraUp.xyz);
+    vec3 origin = camera.cameraPos.xyz;
+
+    float viewport_width = camera.frustumInfo.x;
+    float viewport_height = camera.frustumInfo.y;
+    float focusDist = camera.frustumInfo.z;
+
+    vec3 horizontal = viewport_width * u;
+    vec3 vertical = viewport_height * v;
+    vec3 lower_left_corner = origin - horizontal / 2.0 - vertical / 2.0 - focusDist * w;
+
+    // IMPORTANT: Do NOT normalize! hitT is parametric along un-normalized ray
+    vec3 rayDir = lower_left_corner + uv.x * horizontal + (1.0 - uv.y) * vertical - origin;
+    data.worldPos = origin + rayDir * data.hitT;
+
+    if (!isValid(data.worldPos)) {
+        return data;
+    }
+
+    if (data.instanceId < 10000u) {
+        SphereInfo sphere = spheres[data.instanceId];
+        vec3 toSurface = data.worldPos - sphere.center;
+        float dist = length(toSurface);
+        if (dist > 1e-6) {
+            data.normal = toSurface / dist;
+        } else {
+            data.normal = vec3(0.0, 1.0, 0.0);
+        }
+    } else {
+        data.normal = vec3(0.0, 1.0, 0.0);
+    }
+
+    data.valid = true;
+    return data;
+}
+
+// Compute depth gradient (screen-space derivative) for proper depth weighting
+float computeDepthGradient(ivec2 pixelCoord, ivec2 size, float centerDepth) {
+    float ddx = 0.0;
+    float ddy = 0.0;
+
+    ivec2 px = pixelCoord + ivec2(1, 0);
+    ivec2 mx = pixelCoord + ivec2(-1, 0);
+    ivec2 py = pixelCoord + ivec2(0, 1);
+    ivec2 my = pixelCoord + ivec2(0, -1);
+
+    if (isValidCoord(px, size)) {
+        float d = uintBitsToFloat(imageLoad(visibilityBuffer, px).y);
+        if (isValid(d) && d > 0.0) ddx = abs(d - centerDepth);
+    }
+    if (isValidCoord(mx, size)) {
+        float d = uintBitsToFloat(imageLoad(visibilityBuffer, mx).y);
+        if (isValid(d) && d > 0.0) ddx = max(ddx, abs(d - centerDepth));
+    }
+    if (isValidCoord(py, size)) {
+        float d = uintBitsToFloat(imageLoad(visibilityBuffer, py).y);
+        if (isValid(d) && d > 0.0) ddy = abs(d - centerDepth);
+    }
+    if (isValidCoord(my, size)) {
+        float d = uintBitsToFloat(imageLoad(visibilityBuffer, my).y);
+        if (isValid(d) && d > 0.0) ddy = max(ddy, abs(d - centerDepth));
+    }
+
+    return max(ddx, ddy);
+}
+
+// Gaussian-filtered variance estimate (3x3 neighborhood)
+float computeFilteredVariance(ivec2 pixelCoord, ivec2 size) {
+    float sum = 0.0;
+    for (int yy = -1; yy <= 1; yy++) {
+        for (int xx = -1; xx <= 1; xx++) {
+            ivec2 p = pixelCoord + ivec2(xx, yy);
+            p = clamp(p, ivec2(0), size - ivec2(1));
+            float v = imageLoad(inputColor, p).a;
+            if (!isValid(v)) v = 0.0;
+            sum += v * gaussian_kernel[xx + 1][yy + 1];
+        }
+    }
+    return max(sum, 0.0);
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = ivec2(params.resolution.xy);
+
+    if (pixelCoord.x >= size.x || pixelCoord.y >= size.y) {
+        return;
+    }
+
+    vec4 centerData = imageLoad(inputColor, pixelCoord);
+    vec3 centerColor = centerData.rgb;
+    float centerVariance = centerData.a;
+
+    SurfaceData centerSurface = reconstructSurface(pixelCoord, size);
+
+    if (!centerSurface.valid) {
+        imageStore(outputColor, pixelCoord, vec4(centerColor, centerVariance));
+        return;
+    }
+
+    float centerLum = luminance(centerColor);
+    float depthGradient = computeDepthGradient(pixelCoord, size, centerSurface.hitT);
+
+    // Gaussian-filtered standard deviation for luminance edge-stopping
+    // Reference: sigma_l = sqrt(filtered_variance) * 3.0
+    float filteredVariance = computeFilteredVariance(pixelCoord, size);
+    float sigma_l = sqrt(filteredVariance) * params.sigmaLuminance;
+
+    vec3 sumColor = centerColor;
+    float sumVariance = centerVariance;
+    float sumWeight = 1.0;
+
+    // 3x3 box filter (matching reference: box3)
+    const int r = 1;
+    for (int yy = -r; yy <= r; yy++) {
+        for (int xx = -r; xx <= r; xx++) {
+            if (xx == 0 && yy == 0) continue;
+
+            ivec2 offset = ivec2(xx, yy) * params.stepSize;
+            ivec2 sampleCoord = pixelCoord + offset;
+
+            if (!isValidCoord(sampleCoord, size)) continue;
+
+            vec4 sampleData = imageLoad(inputColor, sampleCoord);
+            vec3 sampleColor = sampleData.rgb;
+            float sampleVariance = sampleData.a;
+
+            if (!isValid(sampleColor)) continue;
+
+            SurfaceData sampleSurface = reconstructSurface(sampleCoord, size);
+            if (!sampleSurface.valid) continue;
+
+            float sampleLum = luminance(sampleColor);
+
+            // Luminance weight: Gaussian falloff (exp(-x^2)), matching reference
+            float w_l = abs(sampleLum - centerLum) / (sigma_l + 1e-10);
+
+            // Depth weight: gradient-normalized, matching reference
+            float w_z = params.sigmaDepth * abs(sampleSurface.hitT - centerSurface.hitT)
+                        / (depthGradient * length(vec2(offset)) + 1e-2);
+
+            // Normal weight: pow(dot, 128), matching reference
+            float normalDot = max(0.0, dot(sampleSurface.normal, centerSurface.normal));
+            float w_n = pow(normalDot, params.sigmaNormal);
+
+            // Combined weight: exp(-w_l^2 - w_z) * w_n
+            float w = exp(-w_l * w_l - w_z) * w_n;
+
+            if (!isValid(w) || w < 1e-6) continue;
+
+            sumColor += sampleColor * w;
+            // Variance propagation (reference: sum_variance += w*w * sample_variance)
+            sumVariance += w * w * sampleVariance;
+            sumWeight += w;
+        }
+    }
+
+    vec3 filteredColor = sumColor / sumWeight;
+    float filteredVar = sumVariance / (sumWeight * sumWeight);
+
+    filteredColor = clamp(filteredColor, vec3(0.0), vec3(100.0));
+    if (!isValid(filteredVar)) filteredVar = 0.0;
+
+    imageStore(outputColor, pixelCoord, vec4(filteredColor, filteredVar));
+}

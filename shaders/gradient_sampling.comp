@@ -1,0 +1,277 @@
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Reshaded color (traced in current frame with previous frame's seed)
+layout(binding = 0, rgba16f) uniform readonly image2D reshadedColor;
+
+// Forward projected color (previous frame's color projected to current frame)
+layout(binding = 1, rgba16f) uniform readonly image2D forwardProjectedColor;
+
+// Current frame Visibility Buffer
+layout(binding = 2, rg32ui) uniform readonly uimage2D currentVisibilityBuffer;
+
+// Previous frame Visibility Buffer (projected)
+layout(binding = 3, rg32ui) uniform readonly uimage2D prevVisibilityBuffer;
+
+// Motion vector
+layout(binding = 4, rg16f) uniform readonly image2D motionVector;
+
+// Output gradient images
+layout(binding = 5, rg16f) uniform writeonly image2D gradientOutput;
+layout(binding = 6, r8ui) uniform writeonly uimage2D gradientSampleMask;
+
+// Sphere Info Buffer for surface reconstruction
+struct SphereInfo {
+    vec3 center;
+    float radius;
+    vec3 color;
+    float materialType;
+    float materialParam;
+    float padding1;
+    float padding2;
+    float padding3;
+};
+
+layout(binding = 7, std430) readonly buffer SphereInfoBuffer {
+    SphereInfo spheres[];
+};
+
+// Camera UBO for reconstruction
+layout(binding = 8) uniform CameraUBO {
+    mat4 viewMatrix;
+    mat4 projMatrix;
+    mat4 viewProjMatrix;
+    mat4 invViewProjMatrix;
+    mat4 prevViewProjMatrix;
+
+    vec4 cameraPos;
+    vec4 cameraFront;
+    vec4 cameraUp;
+    vec4 cameraRight;
+    vec4 frustumInfo;
+
+    vec4 prevCameraPos;
+    vec4 prevCameraFront;
+    vec4 prevCameraUp;
+    vec4 prevCameraRight;
+
+    vec4 resolution;
+} camera;
+
+// Push constants
+layout(push_constant) uniform PushConstants {
+    vec4 resolution;      // width, height, 1/width, 1/height
+    uint frameNumber;
+    float gradientScale;
+    float depthThreshold;
+    float normalThreshold;
+} params;
+
+// Constants
+const int STRATUM_SIZE = 3;
+
+// ============================================
+// NaN protection functions
+// ============================================
+bool isNaN(float x) {
+    return x != x;
+}
+
+bool isNaN(vec3 v) {
+    return isNaN(v.x) || isNaN(v.y) || isNaN(v.z);
+}
+
+bool isInf(vec3 v) {
+    return isinf(v.x) || isinf(v.y) || isinf(v.z);
+}
+
+bool isValid(float x) {
+    return !isNaN(x) && !isinf(x);
+}
+
+bool isValid(vec3 v) {
+    return !isNaN(v) && !isInf(v);
+}
+
+float sanitize(float x, float fallback) {
+    return isValid(x) ? x : fallback;
+}
+
+vec3 safeNormalize(vec3 v, vec3 fallback) {
+    float len = length(v);
+    if (len < 1e-8 || !isValid(len)) {
+        return fallback;
+    }
+    return v / len;
+}
+
+// TEA encryption for stable random numbers
+uvec2 tea(uvec2 v, uint iterations) {
+    uint sum = 0u;
+    uint delta = 0x9E3779B9u;
+    
+    for (uint i = 0u; i < iterations; i++) {
+        sum += delta;
+        v.x += ((v.y << 4u) + 0xA341316Cu) ^ (v.y + sum) ^ ((v.y >> 5u) + 0xC8013EA4u);
+        v.y += ((v.x << 4u) + 0xAD90777Du) ^ (v.x + sum) ^ ((v.x >> 5u) + 0x7E95761Eu);
+    }
+    
+    return v;
+}
+
+// Get gradient sample position within stratum
+ivec2 getGradientSamplePosition(ivec2 stratumCoord, uint frameNumber) {
+    uvec2 seed = uvec2(stratumCoord) + uvec2(frameNumber * 1337u, frameNumber * 7331u);
+    uvec2 hash = tea(seed, 4u);
+    
+    ivec2 offset = ivec2(hash % uvec2(STRATUM_SIZE));
+    
+    return stratumCoord * STRATUM_SIZE + offset;
+}
+
+// Luminance calculation
+float luminance(vec3 color) {
+    return dot(color, vec3(0.299, 0.587, 0.114));
+}
+
+bool isValidCoord(ivec2 coord, ivec2 size) {
+    return coord.x >= 0 && coord.x < size.x && coord.y >= 0 && coord.y < size.y;
+}
+
+// ============================================
+// Surface reconstruction from Visibility Buffer
+// Uses CURRENT camera since we read currentVisibilityBuffer
+// ============================================
+bool reconstructSurface(ivec2 pixelCoord, ivec2 size, 
+                        out vec3 worldPos, out vec3 normal, out float hitT, out uint instanceId) {
+    
+    uvec4 visData = imageLoad(currentVisibilityBuffer, pixelCoord);
+    instanceId = visData.x;
+    hitT = uintBitsToFloat(visData.y);
+    
+    if (instanceId == 0xFFFFFFFF || hitT < 0.0 || !isValid(hitT)) {
+        return false;
+    }
+    
+    // Reconstruct ray direction from pixel coordinate using CURRENT camera
+    vec2 uv = (vec2(pixelCoord) + 0.5) * params.resolution.zw;
+
+    vec3 w = normalize(-camera.cameraFront.xyz);
+    vec3 u = normalize(camera.cameraRight.xyz);
+    vec3 v = normalize(camera.cameraUp.xyz);
+    vec3 origin = camera.cameraPos.xyz;
+
+    float viewport_width = camera.frustumInfo.x; 
+    float viewport_height = camera.frustumInfo.y; 
+
+    vec3 horizontal = viewport_width * u;
+    vec3 vertical = viewport_height * v;
+    vec3 lower_left_corner = origin - horizontal/2.0 - vertical/2.0 - (camera.frustumInfo.z * w);
+
+    vec3 rayDir = lower_left_corner + uv.x * horizontal + (1.0 - uv.y) * vertical - origin;
+    // Do NOT normalize - hitT is parametric along un-normalized ray
+
+    worldPos = origin + rayDir * hitT;
+
+    if (instanceId < 10000u) {
+        SphereInfo sphere = spheres[instanceId];
+        vec3 toSurface = worldPos - sphere.center;
+        normal = normalize(toSurface);
+    } else {
+        normal = vec3(0.0, 1.0, 0.0);
+    }
+    
+    return true;
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = ivec2(params.resolution.xy);
+    
+    // Bounds check
+    if (pixelCoord.x >= size.x || pixelCoord.y >= size.y) {
+        return;
+    }
+    
+    // Determine stratum coordinate
+    ivec2 stratumCoord = pixelCoord / STRATUM_SIZE;
+    
+    // Get gradient sample position for this stratum
+    ivec2 gradientSamplePos = getGradientSamplePosition(stratumCoord, params.frameNumber);
+    gradientSamplePos = clamp(gradientSamplePos, ivec2(0), size - ivec2(1));
+    
+    // Check if this pixel is a gradient sample
+    bool isGradientSample = (pixelCoord == gradientSamplePos);
+    
+    // Write gradient sample mask
+    imageStore(gradientSampleMask, pixelCoord, uvec4(isGradientSample ? 1u : 0u));
+    
+    // Default gradient output
+    vec2 gradientData = vec2(0.0, 0.0);
+    
+    if (isGradientSample) {
+        // Reconstruct current frame surface using Visibility Buffer
+        vec3 currentWorldPos, currentNormal;
+        float currentHitT;
+        uint currentInstanceId;
+        
+        if (!reconstructSurface(pixelCoord, size, currentWorldPos, currentNormal, currentHitT, currentInstanceId)) {
+            // No geometry - output zero gradient
+            imageStore(gradientOutput, pixelCoord, vec4(0.0, 0.0, 0.0, 0.0));
+            return;
+        }
+        
+        // ============================================
+        // Hole detection - enhanced color-based
+        // ============================================
+        vec4 forwardData = imageLoad(forwardProjectedColor, pixelCoord);
+        vec3 forwarded = forwardData.rgb;
+        
+        float forwardedLumCheck = abs(forwarded.r) + abs(forwarded.g) + abs(forwarded.b);
+        bool isHole = !isValid(forwarded) || 
+                      forwardedLumCheck < 1e-5 ||
+                      forwardData.a < 0.5;
+        
+        // If hole, return maximum gradient (reject history data!)
+        if (isHole) {
+            gradientData = vec2(1.0, 1.0);
+            imageStore(gradientOutput, pixelCoord, vec4(gradientData, 0.0, 0.0));
+            return;
+        }
+        
+        // Load reshaded color
+        vec4 reshadedData = imageLoad(reshadedColor, pixelCoord);
+        vec3 reshaded = reshadedData.rgb;
+        
+        if (!isValid(reshaded)) {
+            gradientData = vec2(1.0, 1.0);
+            imageStore(gradientOutput, pixelCoord, vec4(gradientData, 0.0, 0.0));
+            return;
+        }
+        
+        // ============================================
+        // TEMPORAL GRADIENT COMPUTATION
+        // ============================================
+        float reshadedLum = luminance(reshaded);
+        float forwardedLum = luminance(forwarded);
+        
+        reshadedLum = sanitize(reshadedLum, 0.0);
+        forwardedLum = sanitize(forwardedLum, 0.0);
+        
+        float maxLum = max(max(reshadedLum, forwardedLum), 0.001);
+        float gradient = abs(reshadedLum - forwardedLum) / maxLum;
+        
+        // Small differences are ignored (floating point tolerance)
+        gradient = smoothstep(0.02, 0.2, gradient);
+        
+        // Apply scale
+        gradient = clamp(gradient * params.gradientScale, 0.0, 1.0);
+        gradient = sanitize(gradient, 0.0);
+        
+        // Weight = 1 for valid gradient samples
+        gradientData = vec2(gradient, 1.0);
+    }
+    
+    imageStore(gradientOutput, pixelCoord, vec4(gradientData, 0.0, 0.0));
+}

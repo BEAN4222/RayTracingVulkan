@@ -1,0 +1,287 @@
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Previous frame Visibility Buffer (read)
+layout(binding = 0, rg32ui) uniform readonly uimage2D prevVisibilityBuffer;
+
+// Previous frame seed (read)
+layout(binding = 1, r32ui) uniform readonly uimage2D prevSeed;
+
+// Current frame Visibility Buffer (read) - for validation
+layout(binding = 2, rg32ui) uniform readonly uimage2D currVisibilityBuffer;
+
+// Previous frame color (read)
+layout(binding = 3, rgba16f) uniform readonly image2D prevColor;
+
+// Motion vector (read) - optional hint
+layout(binding = 4, rg16f) uniform readonly image2D motionVector;
+
+// Forward projected outputs (write)
+layout(binding = 5, rgba16f) uniform image2D forwardProjectedColor;
+layout(binding = 6, r32ui) uniform uimage2D forwardProjectedSeed;
+layout(binding = 7, r32ui) uniform uimage2D forwardProjectedDepth;
+
+// Sphere Info Buffer for surface reconstruction
+struct SphereInfo {
+    vec3 center;
+    float radius;
+    vec3 color;
+    float materialType;
+    float materialParam;
+    float padding1;
+    float padding2;
+    float padding3;
+};
+
+layout(binding = 8, std430) readonly buffer SphereInfoBuffer {
+    SphereInfo spheres[];
+};
+
+layout(binding = 9) uniform CameraUBO {
+    mat4 viewMatrix;
+    mat4 projMatrix;
+    mat4 viewProjMatrix;
+    mat4 invViewProjMatrix;
+    mat4 prevViewProjMatrix;
+
+    vec4 cameraPos;
+    vec4 cameraFront;
+    vec4 cameraUp;
+    vec4 cameraRight;
+    vec4 frustumInfo;
+
+    vec4 prevCameraPos;
+    vec4 prevCameraFront;
+    vec4 prevCameraUp;
+    vec4 prevCameraRight;
+
+    vec4 resolution;
+} camera;
+
+// Push constants
+layout(push_constant) uniform PushConstants {
+    mat4 viewProjMatrix;      // Current frame's view-projection matrix
+    mat4 invViewProjMatrix;   // Current frame's inverse view-projection matrix
+    vec4 resolution;          // width, height, 1/width, 1/height
+    vec4 cameraPos;           // Camera position for ray reconstruction
+    uint frameNumber;
+    float depthThreshold;
+    float normalThreshold;
+    float padding;
+} params;
+
+// ============================================
+// NaN protection functions
+// ============================================
+bool isNaN(float x) {
+    return x != x;
+}
+
+bool isNaN(vec3 v) {
+    return isNaN(v.x) || isNaN(v.y) || isNaN(v.z);
+}
+
+bool isValid(float x) {
+    return !isNaN(x) && !isinf(x);
+}
+
+bool isValid(vec3 v) {
+    return !isNaN(v.x) && !isNaN(v.y) && !isNaN(v.z) &&
+           !isinf(v.x) && !isinf(v.y) && !isinf(v.z);
+}
+
+// Convert float depth to uint for atomic comparison
+uint floatToOrderedUint(float f) {
+    uint u = floatBitsToUint(f);
+    return (u & 0x80000000u) != 0u ? ~u : (u | 0x80000000u);
+}
+
+bool isValidCoord(ivec2 coord, ivec2 size) {
+    return coord.x >= 0 && coord.x < size.x && coord.y >= 0 && coord.y < size.y;
+}
+
+// ============================================
+// Surface reconstruction from Visibility Buffer
+// ============================================
+// Reconstruct world position and normal from visibility data
+bool reconstructSurface(ivec2 pixelCoord, ivec2 size, 
+                        out vec3 worldPos, out vec3 normal, out float hitT, out uint instanceId) {
+    
+    uvec4 visData = imageLoad(prevVisibilityBuffer, pixelCoord);
+    instanceId = visData.x;
+    hitT = uintBitsToFloat(visData.y);
+    
+    // Check for invalid/background pixel
+    if (instanceId == 0xFFFFFFFF || hitT < 0.0 || !isValid(hitT)) {
+        return false;
+    }
+    
+    // Reconstruct ray direction from pixel coordinate
+    vec2 uv = (vec2(pixelCoord) + 0.5) * params.resolution.zw;
+    
+    vec3 w = normalize(-camera.prevCameraFront.xyz);
+    vec3 u = normalize(camera.prevCameraRight.xyz);
+    vec3 v = normalize(camera.prevCameraUp.xyz);
+    vec3 origin = camera.prevCameraPos.xyz;
+
+    float viewport_width = camera.frustumInfo.x; 
+    float viewport_height = camera.frustumInfo.y; 
+
+    vec3 horizontal = viewport_width * u;
+    vec3 vertical = viewport_height * v;
+    vec3 lower_left_corner = origin - horizontal/2.0 - vertical/2.0 - (camera.frustumInfo.z * w);
+
+    vec3 rayDir = lower_left_corner + uv.x * horizontal + (1.0 - uv.y) * vertical - origin;
+
+    worldPos = origin + rayDir * hitT;
+
+    if (instanceId < 10000u) {
+        SphereInfo sphere = spheres[instanceId];
+        vec3 toSurface = worldPos - sphere.center;
+        normal = normalize(toSurface);
+    } else {
+        normal = vec3(0.0, 1.0, 0.0);
+    }
+    
+    return true;  
+}
+
+// Reconstruct from current frame visibility buffer
+bool reconstructCurrentSurface(ivec2 pixelCoord, ivec2 size, 
+                               out vec3 worldPos, out vec3 normal, out float hitT, out uint instanceId) {
+    
+    uvec4 visData = imageLoad(currVisibilityBuffer, pixelCoord);
+    instanceId = visData.x;
+    hitT = uintBitsToFloat(visData.y);
+    
+    if (instanceId == 0xFFFFFFFF || hitT < 0.0 || !isValid(hitT)) {
+        return false;
+    }
+    
+    vec2 uv = (vec2(pixelCoord) + 0.5) * params.resolution.zw;
+
+    vec3 w = normalize(-camera.cameraFront.xyz);
+    vec3 u = normalize(camera.cameraRight.xyz);
+    vec3 v = normalize(camera.cameraUp.xyz);
+    vec3 origin = camera.cameraPos.xyz;
+
+    float viewport_width = camera.frustumInfo.x; 
+    float viewport_height = camera.frustumInfo.y; 
+
+    vec3 horizontal = viewport_width * u;
+    vec3 vertical = viewport_height * v;
+    vec3 lower_left_corner = origin - horizontal/2.0 - vertical/2.0 - (camera.frustumInfo.z * w);
+
+    vec3 rayDir = lower_left_corner + uv.x * horizontal + (1.0 - uv.y) * vertical - origin;
+
+    worldPos = origin + rayDir * hitT;
+
+    if (instanceId < 10000u) {
+        SphereInfo sphere = spheres[instanceId];
+        vec3 toSurface = worldPos - sphere.center;
+        normal = normalize(toSurface);
+    } 
+    else 
+    {
+        normal = vec3(0.0, 1.0, 0.0);
+    }
+    
+    return true;
+}
+void main() {
+    ivec2 prevCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = ivec2(params.resolution.xy);
+    
+    // Bounds check
+    if (prevCoord.x >= size.x || prevCoord.y >= size.y) {
+        return;
+    }
+    
+    // Reconstruct previous frame surface
+    vec3 prevWorldPos, prevNormal;
+    float prevHitT;
+    uint prevInstanceId;
+    
+    if (!reconstructSurface(prevCoord, size, prevWorldPos, prevNormal, prevHitT, prevInstanceId)) {
+        return;  // No valid geometry in previous frame
+    }
+    
+    // Project previous frame's world position to current frame's screen space
+    vec4 clipPos = params.viewProjMatrix * vec4(prevWorldPos, 1.0);
+    
+    // Check if behind camera
+    if (abs(clipPos.w) < 1e-6) {
+        return;
+    }
+    
+    vec3 ndcPos = clipPos.xyz / clipPos.w;
+    
+    // Vulkan Y-axis correction
+    ndcPos.y = -ndcPos.y;
+    
+    // Check NDC bounds
+    if (ndcPos.x < -1.0 || ndcPos.x > 1.0 ||
+        ndcPos.y < -1.0 || ndcPos.y > 1.0 ||
+        ndcPos.z < 0.0 || ndcPos.z > 1.0) {
+        return;
+    }
+    
+    // Convert to screen coordinates
+    vec2 uvPos = ndcPos.xy * 0.5 + 0.5;
+    vec2 screenPosF = uvPos * vec2(size);
+    ivec2 currentCoord = ivec2(round(screenPosF - 0.5));
+    
+    // Bounds check
+    if (!isValidCoord(currentCoord, size)) {
+        return;
+    }
+    
+    // ============================================
+    // Validation: Check geometry consistency
+    // ============================================
+    vec3 currWorldPos, currNormal;
+    float currHitT;
+    uint currInstanceId;
+    
+    if (reconstructCurrentSurface(currentCoord, size, currWorldPos, currNormal, currHitT, currInstanceId)) {
+        // Instance ID check - must be same object
+        if (prevInstanceId != currInstanceId) {
+            return;
+        }
+        
+        // Normal consistency check
+        float normalDot = dot(prevNormal, currNormal);
+        if (!isValid(normalDot) || normalDot < params.normalThreshold) {
+            return;
+        }
+        
+        // Depth consistency check
+        float depthDiff = abs(prevHitT - currHitT) / max(currHitT, 0.001);
+        if (depthDiff > params.depthThreshold) {
+            return;
+        }
+    }
+    
+    // Load data to forward project
+    vec4 colorData = imageLoad(prevColor, prevCoord);
+    uint seed = imageLoad(prevSeed, prevCoord).x;
+    
+    // NaN check for color
+    if (!isValid(colorData.rgb)) {
+        return;
+    }
+    
+    // Use NDC depth for atomic depth test
+    float projectedDepth = ndcPos.z;
+    uint depthUint = floatToOrderedUint(projectedDepth);
+    
+    // Atomic depth test
+    uint oldDepth = imageAtomicMin(forwardProjectedDepth, currentCoord, depthUint);
+    
+    // If we won the depth test
+    if (depthUint <= oldDepth) {
+        imageStore(forwardProjectedColor, currentCoord, vec4(colorData.rgb, 1.0));
+        imageStore(forwardProjectedSeed, currentCoord, uvec4(seed, 0, 0, 0));
+    }
+}

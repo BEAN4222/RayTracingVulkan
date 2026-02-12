@@ -1,4 +1,4 @@
-﻿#include "lve_ray_tracing_pipeline.h"
+#include "lve_ray_tracing_pipeline.h"
 #include <fstream>
 #include <stdexcept>
 #include <cstring>
@@ -13,7 +13,6 @@ namespace lve {
         const std::string& closestHitShader
     ) : lveDevice{ device } {
 
-        // Load function pointers
         vkGetRayTracingShaderGroupHandlesKHR = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesKHR>(
             vkGetDeviceProcAddr(lveDevice.device(), "vkGetRayTracingShaderGroupHandlesKHR"));
         vkCreateRayTracingPipelinesKHR = reinterpret_cast<PFN_vkCreateRayTracingPipelinesKHR>(
@@ -21,7 +20,6 @@ namespace lve {
         vkGetBufferDeviceAddressKHR = reinterpret_cast<PFN_vkGetBufferDeviceAddressKHR>(
             vkGetDeviceProcAddr(lveDevice.device(), "vkGetBufferDeviceAddressKHR"));
 
-        // Get ray tracing properties
         rtProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
         VkPhysicalDeviceProperties2 deviceProperties{};
         deviceProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
@@ -42,60 +40,97 @@ namespace lve {
     }
 
     void LveRayTracingPipeline::createPipelineLayout() {
-        // Binding 0: Acceleration Structure (raygen)
-        VkDescriptorSetLayoutBinding accelerationStructureBinding{};
-        accelerationStructureBinding.binding = 0;
-        accelerationStructureBinding.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-        accelerationStructureBinding.descriptorCount = 1;
-        accelerationStructureBinding.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        std::vector<VkDescriptorSetLayoutBinding> bindings(9);
 
-        // Binding 1: Storage Image (raygen)
-        VkDescriptorSetLayoutBinding storageImageBinding{};
-        storageImageBinding.binding = 1;
-        storageImageBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        storageImageBinding.descriptorCount = 1;
-        storageImageBinding.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        // 0: Acceleration Structure
+        bindings[0].binding = 0;
+        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        bindings[0].pImmutableSamplers = nullptr;
 
-        // Binding 2: Sphere Info Buffer (closest hit)
-        VkDescriptorSetLayoutBinding sphereInfoBinding{};
-        sphereInfoBinding.binding = 2;
-        sphereInfoBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        sphereInfoBinding.descriptorCount = 1;
-        sphereInfoBinding.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+        // 1: RT Output Image
+        bindings[1].binding = 1;
+        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        bindings[1].pImmutableSamplers = nullptr;
 
-        // Binding 3 (UBO) 삭제됨!
-        VkDescriptorSetLayoutBinding bindings[] = {
-            accelerationStructureBinding,
-            storageImageBinding,
-            sphereInfoBinding
-        };
+        // 2: Sphere Info Buffer
+        bindings[2].binding = 2;
+        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[2].descriptorCount = 1;
+        bindings[2].stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+        bindings[2].pImmutableSamplers = nullptr;
+
+        // 3: Visibility Buffer
+        bindings[3].binding = 3;
+        bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[3].descriptorCount = 1;
+        bindings[3].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        bindings[3].pImmutableSamplers = nullptr;
+
+        // 4: Motion Vector
+        bindings[4].binding = 4;
+        bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[4].descriptorCount = 1;
+        bindings[4].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        bindings[4].pImmutableSamplers = nullptr;
+
+        // 5: Camera UBO
+        bindings[5].binding = 5;
+        bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bindings[5].descriptorCount = 1;
+        bindings[5].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        bindings[5].pImmutableSamplers = nullptr;
+
+        // 6: Seed Output
+        bindings[6].binding = 6;
+        bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[6].descriptorCount = 1;
+        bindings[6].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        bindings[6].pImmutableSamplers = nullptr;
+
+        // 7: Forward Projected Seed
+        bindings[7].binding = 7;
+        bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[7].descriptorCount = 1;
+        bindings[7].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        bindings[7].pImmutableSamplers = nullptr;
+
+        // 8: Reshaded Output
+        bindings[8].binding = 8;
+        bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[8].descriptorCount = 1;
+        bindings[8].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        bindings[8].pImmutableSamplers = nullptr;
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 3;  // 4 → 3
-        layoutInfo.pBindings = bindings;
+        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        layoutInfo.pBindings = bindings.data();
 
         if (vkCreateDescriptorSetLayout(lveDevice.device(), &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create descriptor set layout!");
         }
 
-        // Push Constants Range 추가!
         VkPushConstantRange pushConstantRange{};
-        pushConstantRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
         pushConstantRange.offset = 0;
-        pushConstantRange.size = 80;  // sizeof(CameraPushConstants): 4 * vec3(16) + 4 * float(4) = 80 bytes
+        pushConstantRange.size = 80;
 
-        // Pipeline Layout
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutInfo.setLayoutCount = 1;
         pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
-        pipelineLayoutInfo.pushConstantRangeCount = 1;           // 추가!
-        pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;  // 추가!
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
         if (vkCreatePipelineLayout(lveDevice.device(), &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create pipeline layout!");
         }
+
+        std::cout << "Ray tracing pipeline layout created with 9 bindings" << std::endl;
     }
 
     void LveRayTracingPipeline::createRayTracingPipeline(
@@ -180,6 +215,8 @@ namespace lve {
         vkDestroyShaderModule(lveDevice.device(), raygenModule, nullptr);
         vkDestroyShaderModule(lveDevice.device(), missModule, nullptr);
         vkDestroyShaderModule(lveDevice.device(), chitModule, nullptr);
+
+        std::cout << "Ray tracing pipeline created successfully" << std::endl;
     }
 
     void LveRayTracingPipeline::createShaderBindingTable() {
@@ -188,12 +225,13 @@ namespace lve {
         const uint32_t baseAlignment = rtProperties.shaderGroupBaseAlignment;
         const uint32_t groupCount = 3;
 
-        std::cout << "handleSize: " << handleSize << std::endl;
-        std::cout << "handleAlignment: " << handleAlignment << std::endl;
-        std::cout << "baseAlignment: " << baseAlignment << std::endl;
+        std::cout << "SBT Properties:" << std::endl;
+        std::cout << "  handleSize: " << handleSize << std::endl;
+        std::cout << "  handleAlignment: " << handleAlignment << std::endl;
+        std::cout << "  baseAlignment: " << baseAlignment << std::endl;
 
         const uint32_t handleSizeAligned = (handleSize + baseAlignment - 1) & ~(baseAlignment - 1);
-        std::cout << "handleSizeAligned: " << handleSizeAligned << std::endl;
+        std::cout << "  handleSizeAligned: " << handleSizeAligned << std::endl;
 
         const uint32_t dataSize = groupCount * handleSize;
         std::vector<uint8_t> shaderHandleStorage(dataSize);
@@ -234,8 +272,7 @@ namespace lve {
         bufferInfo.buffer = sbtBuffer;
         VkDeviceAddress sbtAddress = vkGetBufferDeviceAddressKHR(lveDevice.device(), &bufferInfo);
 
-        std::cout << "sbtAddress: " << sbtAddress << std::endl;
-        std::cout << "sbtAddress % 64: " << (sbtAddress % 64) << std::endl;
+        std::cout << "SBT Address: " << sbtAddress << " (alignment check: " << (sbtAddress % baseAlignment) << ")" << std::endl;
 
         if (sbtAddress % baseAlignment != 0) {
             std::cerr << "ERROR: SBT buffer address not aligned!" << std::endl;
@@ -256,9 +293,7 @@ namespace lve {
 
         callableRegion = {};
 
-        std::cout << "raygenRegion.deviceAddress: " << raygenRegion.deviceAddress << std::endl;
-        std::cout << "missRegion.deviceAddress: " << missRegion.deviceAddress << std::endl;
-        std::cout << "hitRegion.deviceAddress: " << hitRegion.deviceAddress << std::endl;
+        std::cout << "Shader Binding Table created successfully" << std::endl;
     }
 
     std::vector<char> LveRayTracingPipeline::readFile(const std::string& filepath) {
@@ -292,4 +327,4 @@ namespace lve {
         return shaderModule;
     }
 
-} // namespace lve
+}

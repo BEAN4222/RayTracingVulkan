@@ -1,0 +1,192 @@
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Previous frame data
+layout(binding = 0, rgba32f) uniform readonly image2D prevWorldPos;    // Previous frame world position
+layout(binding = 1, rgba16f) uniform readonly image2D prevNormal;      // Previous frame normal
+layout(binding = 2, r32ui) uniform readonly uimage2D prevSeedBuffer;   // Previous frame seed
+
+// Current frame data
+layout(binding = 3, rgba32f) uniform readonly image2D currWorldPos;    // Current frame world position
+layout(binding = 4, rgba16f) uniform readonly image2D currNormal;      // Current frame normal
+
+// Output: forward-projected seed buffer
+// Use r32ui for atomic operations to handle multiple prev pixels projecting to same curr pixel
+layout(binding = 5, r32ui) uniform uimage2D forwardProjectedSeed;
+
+// Camera matrices
+layout(binding = 6) uniform CameraUBO {
+    mat4 viewMatrix;
+    mat4 projMatrix;
+    mat4 viewProjMatrix;
+    mat4 invViewProjMatrix;
+    mat4 prevViewProjMatrix;
+    vec4 resolution;
+    float nearPlane;
+    float farPlane;
+} camera;
+
+// Push constants
+layout(push_constant) uniform PushConstants {
+    vec4 resolution;      // width, height, 1/width, 1/height
+    uint frameNumber;
+    float depthThreshold;
+    float normalThreshold;
+    float padding;
+} params;
+
+// Constants
+const int STRATUM_SIZE = 3;  // 3x3 stratum for gradient samples
+
+// ============================================
+// NaN protection
+// ============================================
+bool isNaN(float x) {
+    return x != x;
+}
+
+bool isValid(float x) {
+    return !isNaN(x) && !isinf(x);
+}
+
+bool isValid(vec3 v) {
+    return !isNaN(v.x) && !isNaN(v.y) && !isNaN(v.z) && 
+           !isinf(v.x) && !isinf(v.y) && !isinf(v.z);
+}
+
+vec3 safeNormalize(vec3 v, vec3 fallback) {
+    float len = length(v);
+    if (len < 1e-8 || !isValid(len)) {
+        return fallback;
+    }
+    return v / len;
+}
+
+// TEA encryption for consistent random across frames
+uvec2 tea(uvec2 v, uint iterations) {
+    uint sum = 0u;
+    uint delta = 0x9E3779B9u;
+    
+    for (uint i = 0u; i < iterations; i++) {
+        sum += delta;
+        v.x += ((v.y << 4u) + 0xA341316Cu) ^ (v.y + sum) ^ ((v.y >> 5u) + 0xC8013EA4u);
+        v.y += ((v.x << 4u) + 0xAD90777Du) ^ (v.x + sum) ^ ((v.x >> 5u) + 0x7E95761Eu);
+    }
+    
+    return v;
+}
+
+// Get gradient sample position within stratum
+ivec2 getGradientSamplePosition(ivec2 stratumCoord, uint frameNumber) {
+    uvec2 seed = uvec2(stratumCoord) + uvec2(frameNumber * 1337u, frameNumber * 7331u);
+    uvec2 hashVal = tea(seed, 4u);
+    
+    ivec2 offset = ivec2(hashVal % uvec2(STRATUM_SIZE));
+    
+    return stratumCoord * STRATUM_SIZE + offset;
+}
+
+bool isValidCoord(ivec2 coord, ivec2 size) {
+    return coord.x >= 0 && coord.x < size.x && coord.y >= 0 && coord.y < size.y;
+}
+
+void main() {
+    ivec2 prevPixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = ivec2(params.resolution.xy);
+    
+    // Bounds check
+    if (prevPixelCoord.x >= size.x || prevPixelCoord.y >= size.y) {
+        return;
+    }
+    
+    // Only process gradient sample positions (from previous frame)
+    // Use previous frame number to get consistent stratum position
+    ivec2 stratumCoord = prevPixelCoord / STRATUM_SIZE;
+    ivec2 gradientSamplePos = getGradientSamplePosition(stratumCoord, params.frameNumber - 1u);
+    gradientSamplePos = clamp(gradientSamplePos, ivec2(0), size - ivec2(1));
+    
+    // Skip if this is not a gradient sample position
+    if (prevPixelCoord != gradientSamplePos) {
+        return;
+    }
+    
+    // Load previous frame world position
+    vec4 prevWorldPosData = imageLoad(prevWorldPos, prevPixelCoord);
+    
+    // Skip if no geometry in previous frame
+    if (prevWorldPosData.w < 0.0 || !isValid(prevWorldPosData.w)) {
+        return;
+    }
+    
+    vec3 worldPosition = prevWorldPosData.xyz;
+    
+    // Project previous frame world position to current frame screen space
+    vec4 currClip = camera.viewProjMatrix * vec4(worldPosition, 1.0);
+    
+    // Check if behind camera
+    if (currClip.w <= 0.0) {
+        return;
+    }
+    
+    vec3 currNDC = currClip.xyz / currClip.w;
+    
+    // Check if outside screen
+    if (currNDC.x < -1.0 || currNDC.x > 1.0 || 
+        currNDC.y < -1.0 || currNDC.y > 1.0 ||
+        currNDC.z < 0.0 || currNDC.z > 1.0) {
+        return;
+    }
+    
+    // Convert to pixel coordinates
+    vec2 currUV = currNDC.xy * 0.5 + 0.5;
+    ivec2 currPixelCoord = ivec2(currUV * vec2(size));
+    currPixelCoord = clamp(currPixelCoord, ivec2(0), size - ivec2(1));
+    
+    // Validate projection with geometry consistency
+    vec4 currWorldPosData = imageLoad(currWorldPos, currPixelCoord);
+    vec4 currNormalData = imageLoad(currNormal, currPixelCoord);
+    vec4 prevNormalData = imageLoad(prevNormal, prevPixelCoord);
+    
+    // Skip if no geometry in current frame
+    if (currWorldPosData.w < 0.0 || !isValid(currWorldPosData.w)) {
+        return;
+    }
+    
+    // Depth consistency check
+    float currDepth = currWorldPosData.w;
+    float projectedDepth = length(worldPosition - vec3(camera.viewMatrix[3]));  // Approximate camera position
+    
+    // Use the distance from camera for depth comparison
+    float depthDiff = abs(currDepth - projectedDepth) / max(currDepth, 0.001);
+    if (depthDiff > params.depthThreshold) {
+        return;
+    }
+    
+    // Normal consistency check
+    vec3 currNorm = safeNormalize(currNormalData.xyz, vec3(0.0, 1.0, 0.0));
+    vec3 prevNorm = safeNormalize(prevNormalData.xyz, vec3(0.0, 1.0, 0.0));
+    
+    float normalDot = dot(currNorm, prevNorm);
+    if (!isValid(normalDot) || normalDot < params.normalThreshold) {
+        return;
+    }
+    
+    // Instance ID check
+    float currInstance = currNormalData.w;
+    float prevInstance = prevNormalData.w;
+    if (abs(currInstance - prevInstance) > 0.5) {
+        return;
+    }
+    
+    // All checks passed - forward project the seed
+    uint prevSeed = imageLoad(prevSeedBuffer, prevPixelCoord).x;
+    
+    // Use atomic compare-swap to handle race conditions
+    // If multiple prev pixels project to the same curr pixel, first one wins
+    uint expected = 0u;
+    uint result = imageAtomicCompSwap(forwardProjectedSeed, currPixelCoord, expected, prevSeed);
+    
+    // If the swap succeeded (result == 0), our seed was stored
+    // If it failed (result != 0), another pixel already stored a seed there
+}
