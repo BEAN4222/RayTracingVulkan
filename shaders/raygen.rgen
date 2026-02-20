@@ -178,9 +178,10 @@ vec3 defocus_disk_sample(inout uint seed) {
 
 void get_ray(int i, int j, inout uint seed, out vec3 origin, out vec3 direction) {
     // A-SVGF: No jitter - use pixel center for deterministic rays
+    // pixel00_loc is already the center of pixel (0,0), so use i and j directly
     vec3 pixel_sample = pixel00_loc
-        + (float(i) + 0.5) * pixel_delta_u
-        + (float(j) + 0.5) * pixel_delta_v;
+        + float(i) * pixel_delta_u
+        + float(j) * pixel_delta_v;
     
     if (cam_defocus_angle > 0.0) {
         origin = defocus_disk_sample(seed);
@@ -217,8 +218,8 @@ vec3 reconstructWorldPosition(ivec2 pixel, float hitT) {
     // the un-normalized ray: hit = origin + direction * t
     vec3 ray_origin = pushCamera.position;
     vec3 pixel_sample = pixel00_loc
-        + (float(pixel.x) + 0.5) * pixel_delta_u
-        + (float(pixel.y) + 0.5) * pixel_delta_v;
+        + float(pixel.x) * pixel_delta_u
+        + float(pixel.y) * pixel_delta_v;
     vec3 ray_direction = pixel_sample - ray_origin;
     
     return ray_origin + ray_direction * hitT;

@@ -191,9 +191,9 @@ void main() {
         camera.cameraPos.xyz, camera.cameraFront.xyz,
         camera.cameraRight.xyz, camera.cameraUp.xyz);
 
-    float depthGrad = 0.0;
+    float surfaceDistFromCamera = 0.0;
     if (currentSurface.valid) {
-        depthGrad = computeDepthGradient(pixelCoord, size, currentSurface.hitT);
+        surfaceDistFromCamera = max(length(currentSurface.worldPos - camera.cameraPos.xyz), 0.01);
     }
 
     // Reprojection using motion vector
@@ -222,8 +222,9 @@ void main() {
                 if (currentSurface.instanceId != prevSurface.instanceId) continue;
                 if (dot(currentSurface.normal, prevSurface.normal) < 0.95) continue;
 
-                float z_diff = abs(currentSurface.hitT - prevSurface.hitT);
-                if (z_diff > 2.0 * (depthGrad + 1e-3)) continue;
+                // World-space position comparison: camera-independent, works at all distances
+                float worldDist = length(currentSurface.worldPos - prevSurface.worldPos);
+                if (worldDist > 0.1 * surfaceDistFromCamera) continue;
 
                 float w = (xx == 0 ? (1.0 - frac.x) : frac.x)
                         * (yy == 0 ? (1.0 - frac.y) : frac.y);
@@ -258,8 +259,9 @@ void main() {
                     if (currentSurface.instanceId != prevSurface.instanceId) continue;
                     if (dot(currentSurface.normal, prevSurface.normal) < 0.9) continue;
 
-                    float z_diff = abs(currentSurface.hitT - prevSurface.hitT);
-                    if (z_diff > 4.0 * (depthGrad + 1e-3)) continue;
+                    // World-space position comparison (relaxed for 3x3 fallback)
+                    float worldDist = length(currentSurface.worldPos - prevSurface.worldPos);
+                    if (worldDist > 0.2 * surfaceDistFromCamera) continue;
 
                     vec3 c = imageLoad(historyColorIn, tap).rgb;
                     if (!isValid(c)) continue;

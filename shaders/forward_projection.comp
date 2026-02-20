@@ -256,9 +256,10 @@ void main() {
             return;
         }
         
-        // Depth consistency check
-        float depthDiff = abs(prevHitT - currHitT) / max(currHitT, 0.001);
-        if (depthDiff > params.depthThreshold) {
+        // World-space depth consistency check: camera-independent, works at all distances
+        float worldDist = length(prevWorldPos - currWorldPos);
+        float surfaceDist = max(length(currWorldPos - camera.cameraPos.xyz), 0.01);
+        if (worldDist > params.depthThreshold * surfaceDist) {
             return;
         }
     }
