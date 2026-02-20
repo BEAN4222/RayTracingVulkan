@@ -60,11 +60,11 @@ namespace lve {
     };
 
     struct GradientAtrousPushConstants {
-        glm::vec4 resolution;
+        glm::vec4 fullResolution;   // full width, height, 1/width, 1/height
         int32_t stepSize;
         float sigmaDepth;
         float sigmaNormal;
-        float padding;
+        uint32_t frameNumber;
     };
 
     struct SpatialFilterPushConstants {
@@ -265,10 +265,6 @@ namespace lve {
         VkImage gradientImage[2];
         VkDeviceMemory gradientMemory[2];
         VkImageView gradientView[2];
-
-        VkImage gradientSampleMask;
-        VkDeviceMemory gradientSampleMaskMemory;
-        VkImageView gradientSampleMaskView;
 
         VkDescriptorSetLayout gradientSamplingDescriptorSetLayout;
         VkDescriptorPool gradientDescriptorPool;

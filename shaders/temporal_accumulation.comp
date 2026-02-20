@@ -149,13 +149,20 @@ float computeDepthGradient(ivec2 pixelCoord, ivec2 size, float centerDepth) {
     return max(grad, 0.01 * centerDepth);
 }
 
-// Antilag: MAX over 3x3 neighborhood from filtered gradient
+// Antilag: MAX over 3x3 neighborhood from filtered gradient (stratum resolution)
+// Gradient buffer is stored at 1/3 resolution (stratum size = 3)
+const int STRATUM_SIZE = 3;
+
 float computeAntilagAlpha(ivec2 pixelCoord, ivec2 size) {
+    // Convert full-res pixel coordinate to stratum coordinate
+    ivec2 stratumCoord = pixelCoord / STRATUM_SIZE;
+    ivec2 stratumSize = (size + ivec2(STRATUM_SIZE - 1)) / STRATUM_SIZE;
+
     float maxAlpha = 0.0;
     for (int yy = -1; yy <= 1; yy++) {
         for (int xx = -1; xx <= 1; xx++) {
-            ivec2 p = pixelCoord + ivec2(xx, yy);
-            if (!isValidCoord(p, size)) continue;
+            ivec2 p = stratumCoord + ivec2(xx, yy);
+            if (p.x < 0 || p.x >= stratumSize.x || p.y < 0 || p.y >= stratumSize.y) continue;
             vec2 g = imageLoad(gradientInput, p).xy;
             float gradient = sanitize(g.x, 0.0);
             float weight = sanitize(g.y, 0.0);

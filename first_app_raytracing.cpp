@@ -412,9 +412,6 @@ namespace lve {
             vkFreeMemory(lveDevice.device(), gradientMemory[i], nullptr);
         }
 
-        vkDestroyImageView(lveDevice.device(), gradientSampleMaskView, nullptr);
-        vkDestroyImage(lveDevice.device(), gradientSampleMask, nullptr);
-        vkFreeMemory(lveDevice.device(), gradientSampleMaskMemory, nullptr);
 
         cleanupForwardProjectionImages();
         cleanupVisibilityBufferImages();
@@ -682,15 +679,18 @@ namespace lve {
         uint32_t width = lveSwapChain.width();
         uint32_t height = lveSwapChain.height();
 
-        std::cout << "Creating gradient images..." << std::endl;
+        // Stratum resolution: ceil(fullRes / STRATUM_SIZE)
+        const uint32_t STRATUM_SIZE = 3;
+        uint32_t stratumWidth = (width + STRATUM_SIZE - 1) / STRATUM_SIZE;
+        uint32_t stratumHeight = (height + STRATUM_SIZE - 1) / STRATUM_SIZE;
+
+        std::cout << "Creating gradient images at stratum resolution ("
+            << stratumWidth << "x" << stratumHeight << ")..." << std::endl;
 
         for (int i = 0; i < 2; i++) {
-            createStorageImageHelper(lveDevice, width, height, VK_FORMAT_R16G16_SFLOAT,
+            createStorageImageHelper(lveDevice, stratumWidth, stratumHeight, VK_FORMAT_R16G16_SFLOAT,
                 gradientImage[i], gradientMemory[i], gradientView[i]);
         }
-
-        createStorageImageHelper(lveDevice, width, height, VK_FORMAT_R8_UINT,
-            gradientSampleMask, gradientSampleMaskMemory, gradientSampleMaskView);
 
         std::cout << "Gradient images created successfully" << std::endl;
     }
@@ -874,7 +874,7 @@ namespace lve {
 
         if (vkCreateDescriptorSetLayout(lveDevice.device(), &layoutInfo, nullptr, &fpDescriptorSetLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create FP descriptor set layout!");
-        }        
+        }
         std::cout << "FP descriptor set layout created with " << bindings.size() << " bindings" << std::endl;
     }
 
@@ -1180,10 +1180,9 @@ namespace lve {
         {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // Reshaded
         {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // Fwd Proj
         {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // Curr Vis
-        {3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // Prev Vis (누락되었던 것)
+        {3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // Prev Vis
         {4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // Motion
-        {5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // Gradient Out
-        {6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // Mask Out
+        {5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // Gradient Out (stratum res)
         {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},// Sphere Buffer
         {8, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},// Camera UBO
         };
@@ -1245,6 +1244,8 @@ namespace lve {
             throw std::runtime_error("failed to allocate gradient sampling descriptor set!");
         }
 
+        // Bindings: 0=reshaded, 1=fwdProj, 2=currVis, 3=prevVis, 4=motion, 5=gradientOut(stratum)
+        // Binding 6 removed (was gradientSampleMask), 7=spheres, 8=cameraUBO
         std::vector<VkDescriptorImageInfo> samplingImageInfos = {
             {VK_NULL_HANDLE, reshadedImageView, VK_IMAGE_LAYOUT_GENERAL},
             {VK_NULL_HANDLE, forwardProjectedColorView, VK_IMAGE_LAYOUT_GENERAL},
@@ -1252,11 +1253,10 @@ namespace lve {
             {VK_NULL_HANDLE, prevVisibilityBufferView, VK_IMAGE_LAYOUT_GENERAL},
             {VK_NULL_HANDLE, gBufferMotionView, VK_IMAGE_LAYOUT_GENERAL},
             {VK_NULL_HANDLE, gradientView[0], VK_IMAGE_LAYOUT_GENERAL},
-            {VK_NULL_HANDLE, gradientSampleMaskView, VK_IMAGE_LAYOUT_GENERAL},
         };
 
         std::vector<VkWriteDescriptorSet> samplingWrites;
-        for (int i = 0; i < 7; i++) {
+        for (int i = 0; i < 6; i++) {
             VkWriteDescriptorSet write{};
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             write.dstSet = gradientSamplingDescriptorSet;
@@ -1592,6 +1592,14 @@ namespace lve {
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memBarrier, 0, nullptr, 0, nullptr);
 
         if (useAdaptiveAlpha && frameNumber > 0) {
+            // Stratum resolution dispatch sizes
+            const uint32_t STRATUM_SIZE = 3;
+            uint32_t stratumWidth = (lveSwapChain.width() + STRATUM_SIZE - 1) / STRATUM_SIZE;
+            uint32_t stratumHeight = (lveSwapChain.height() + STRATUM_SIZE - 1) / STRATUM_SIZE;
+            uint32_t stratumGroupX = (stratumWidth + 15) / 16;
+            uint32_t stratumGroupY = (stratumHeight + 15) / 16;
+
+            // --- Gradient Sampling (dispatched at stratum resolution) ---
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gradientSamplingPipeline->getPipeline());
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                 gradientSamplingPipeline->getPipelineLayout(), 0, 1, &gradientSamplingDescriptorSet, 0, nullptr);
@@ -1611,13 +1619,14 @@ namespace lve {
             vkCmdPushConstants(commandBuffer, gradientSamplingPipeline->getPipelineLayout(),
                 VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GradientSamplingPushConstants), &gsPushConstants);
 
-            vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
+            vkCmdDispatch(commandBuffer, stratumGroupX, stratumGroupY, 1);
 
             memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
             memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memBarrier, 0, nullptr, 0, nullptr);
 
+            // --- Gradient A-Trous (dispatched at stratum resolution) ---
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gradientAtrousPipeline->getPipeline());
 
             for (int pass = 0; pass < 3; pass++) {
@@ -1627,7 +1636,7 @@ namespace lve {
                     gradientAtrousPipeline->getPipelineLayout(), 0, 1, &gradientAtrousDescriptorSets[currentSet], 0, nullptr);
 
                 GradientAtrousPushConstants gaPushConstants{};
-                gaPushConstants.resolution = glm::vec4(
+                gaPushConstants.fullResolution = glm::vec4(
                     static_cast<float>(lveSwapChain.width()),
                     static_cast<float>(lveSwapChain.height()),
                     1.0f / static_cast<float>(lveSwapChain.width()),
@@ -1636,11 +1645,12 @@ namespace lve {
                 gaPushConstants.stepSize = 1 << pass;
                 gaPushConstants.sigmaDepth = sfSigmaDepth;
                 gaPushConstants.sigmaNormal = sfSigmaNormal;
+                gaPushConstants.frameNumber = frameNumber;
 
                 vkCmdPushConstants(commandBuffer, gradientAtrousPipeline->getPipelineLayout(),
                     VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GradientAtrousPushConstants), &gaPushConstants);
 
-                vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
+                vkCmdDispatch(commandBuffer, stratumGroupX, stratumGroupY, 1);
 
                 if (pass < 2) {
                     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
