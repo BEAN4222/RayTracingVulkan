@@ -349,7 +349,34 @@ void main() {
     outputLength = sanitize(outputLength, 1.0);
     outputColor = clamp(outputColor, vec3(0.0), vec3(100.0));
 
-    float outputVariance = max(0.0, outputMoments.y - outputMoments.x * outputMoments.x);
+    float outputVariance;
+    if (outputLength < 4.0) {
+        // Spatial variance estimate: use 3x3 neighborhood luminance
+        // When history is short, temporal variance is unreliable (single sample = 0 variance)
+        float m1 = 0.0, m2 = 0.0, cnt = 0.0;
+        for (int yy = -1; yy <= 1; yy++) {
+            for (int xx = -1; xx <= 1; xx++) {
+                ivec2 np = pixelCoord + ivec2(xx, yy);
+                if (!isValidCoord(np, size)) continue;
+                vec3 nc = imageLoad(currentColor, np).rgb;
+                if (!isValid(nc)) continue;
+                float nl = luminance(nc);
+                m1 += nl;
+                m2 += nl * nl;
+                cnt += 1.0;
+            }
+        }
+        if (cnt > 1.0) {
+            m1 /= cnt;
+            m2 /= cnt;
+            outputVariance = max(0.0, m2 - m1 * m1);
+        } else {
+            outputVariance = 1.0;  // fallback: high variance -> strong blur
+        }
+    } else {
+        // Temporal variance: sufficient history available
+        outputVariance = max(0.0, outputMoments.y - outputMoments.x * outputMoments.x);
+    }
     outputVariance = sanitize(outputVariance, 0.0);
 
     imageStore(historyColorOut, pixelCoord, vec4(outputColor, 1.0));
