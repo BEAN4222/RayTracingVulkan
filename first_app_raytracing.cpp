@@ -572,6 +572,7 @@ namespace lve {
             throw std::runtime_error("failed to acquire swap chain image!");
         }
 
+        lveSwapChain.waitForImageInFlight(imageIndex);
         // 매 프레임 Command Buffer 기록!
         vkResetCommandBuffer(commandBuffers[imageIndex], 0);
         recordCommandBuffer(commandBuffers[imageIndex], imageIndex);
@@ -580,7 +581,6 @@ namespace lve {
         if (result != VK_SUCCESS) {
             throw std::runtime_error("failed to present swap chain image!");
         }
-        vkQueueWaitIdle(lveDevice.presentQueue());
     }
 
 } // namespace lve

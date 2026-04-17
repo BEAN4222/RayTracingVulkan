@@ -163,7 +163,7 @@ namespace lve {
         pipelineInfo.pStages = stages;
         pipelineInfo.groupCount = 3;
         pipelineInfo.pGroups = groups;
-        pipelineInfo.maxPipelineRayRecursionDepth = 10;
+        pipelineInfo.maxPipelineRayRecursionDepth = 1;
         pipelineInfo.layout = pipelineLayout;
 
         if (vkCreateRayTracingPipelinesKHR(
