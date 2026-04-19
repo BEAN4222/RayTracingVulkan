@@ -47,7 +47,7 @@ namespace lve {
         void createDescriptorPool();
         void createDescriptorSets();
         void createCommandBuffers();
-        void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+        void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, uint32_t currentFrame);
         void drawFrame();
 
         // Camera system
@@ -66,13 +66,13 @@ namespace lve {
         std::unique_ptr<LveAccelerationStructure> accelerationStructure;
         std::unique_ptr<LveRayTracingPipeline> rayTracingPipeline;
 
-        // Storage Image
-        VkImage storageImage;
-        VkDeviceMemory storageImageMemory;
-        VkImageView storageImageView;
+        // Storage Image (per frame in flight)
+        std::vector<VkImage> storageImages;
+        std::vector<VkDeviceMemory> storageImageMemories;
+        std::vector<VkImageView> storageImageViews;
 
         VkDescriptorPool descriptorPool;
-        VkDescriptorSet descriptorSet;
+        std::vector<VkDescriptorSet> descriptorSets;
         std::vector<VkCommandBuffer> commandBuffers;
 
         // Camera state
