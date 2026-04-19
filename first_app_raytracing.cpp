@@ -225,9 +225,11 @@ namespace lve {
     }
 
     FirstAppRayTracing::~FirstAppRayTracing() {
-        vkDestroyImageView(lveDevice.device(), storageImageView, nullptr);
-        vkDestroyImage(lveDevice.device(), storageImage, nullptr);
-        vkFreeMemory(lveDevice.device(), storageImageMemory, nullptr);
+        for (size_t i = 0; i < storageImages.size(); i++) {
+            vkDestroyImageView(lveDevice.device(), storageImageViews[i], nullptr);
+            vkDestroyImage(lveDevice.device(), storageImages[i], nullptr);
+            vkFreeMemory(lveDevice.device(), storageImageMemories[i], nullptr);
+        }
         vkDestroyDescriptorPool(lveDevice.device(), descriptorPool, nullptr);
 
         vkFreeCommandBuffers(
@@ -259,59 +261,69 @@ namespace lve {
     }
 
     void FirstAppRayTracing::createStorageImage() {
-        VkImageCreateInfo imageInfo{};
-        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.extent.width = lveSwapChain.width();
-        imageInfo.extent.height = lveSwapChain.height();
-        imageInfo.extent.depth = 1;
-        imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = 1;
-        imageInfo.format = VK_FORMAT_B8G8R8A8_UNORM;
-        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        const size_t framesInFlight = LveSwapChain::MAX_FRAMES_IN_FLIGHT;
+        storageImages.resize(framesInFlight);
+        storageImageMemories.resize(framesInFlight);
+        storageImageViews.resize(framesInFlight);
 
-        lveDevice.createImageWithInfo(
-            imageInfo,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            storageImage,
-            storageImageMemory
-        );
+        for (size_t i = 0; i < framesInFlight; i++) {
+            VkImageCreateInfo imageInfo{};
+            imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+            imageInfo.imageType = VK_IMAGE_TYPE_2D;
+            imageInfo.extent.width = lveSwapChain.width();
+            imageInfo.extent.height = lveSwapChain.height();
+            imageInfo.extent.depth = 1;
+            imageInfo.mipLevels = 1;
+            imageInfo.arrayLayers = 1;
+            imageInfo.format = VK_FORMAT_B8G8R8A8_UNORM;
+            imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = storageImage;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = VK_FORMAT_B8G8R8A8_UNORM;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
+            lveDevice.createImageWithInfo(
+                imageInfo,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                storageImages[i],
+                storageImageMemories[i]
+            );
 
-        if (vkCreateImageView(lveDevice.device(), &viewInfo, nullptr, &storageImageView) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create storage image view!");
+            VkImageViewCreateInfo viewInfo{};
+            viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            viewInfo.image = storageImages[i];
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            viewInfo.format = VK_FORMAT_B8G8R8A8_UNORM;
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            viewInfo.subresourceRange.baseMipLevel = 0;
+            viewInfo.subresourceRange.levelCount = 1;
+            viewInfo.subresourceRange.baseArrayLayer = 0;
+            viewInfo.subresourceRange.layerCount = 1;
+
+            if (vkCreateImageView(lveDevice.device(), &viewInfo, nullptr, &storageImageViews[i]) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create storage image view!");
+            }
         }
 
         VkCommandBuffer commandBuffer = lveDevice.beginSingleTimeCommands();
 
-        VkImageMemoryBarrier barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = storageImage;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
-        barrier.srcAccessMask = 0;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        std::vector<VkImageMemoryBarrier> barriers(framesInFlight);
+        for (size_t i = 0; i < framesInFlight; i++) {
+            barriers[i] = {};
+            barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[i].image = storageImages[i];
+            barriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            barriers[i].subresourceRange.baseMipLevel = 0;
+            barriers[i].subresourceRange.levelCount = 1;
+            barriers[i].subresourceRange.baseArrayLayer = 0;
+            barriers[i].subresourceRange.layerCount = 1;
+            barriers[i].srcAccessMask = 0;
+            barriers[i].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        }
 
         vkCmdPipelineBarrier(
             commandBuffer,
@@ -320,25 +332,26 @@ namespace lve {
             0,
             0, nullptr,
             0, nullptr,
-            1, &barrier
+            static_cast<uint32_t>(barriers.size()), barriers.data()
         );
 
         lveDevice.endSingleTimeCommands(commandBuffer);
     }
 
     void FirstAppRayTracing::createDescriptorPool() {
-        // UBO 삭제됨 - 3개만!
+        const uint32_t framesInFlight = LveSwapChain::MAX_FRAMES_IN_FLIGHT;
+
         VkDescriptorPoolSize poolSizes[] = {
-            {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+            {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, framesInFlight},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, framesInFlight},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, framesInFlight},
         };
 
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = 3;
         poolInfo.pPoolSizes = poolSizes;
-        poolInfo.maxSets = 1;
+        poolInfo.maxSets = framesInFlight;
 
         if (vkCreateDescriptorPool(lveDevice.device(), &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
             throw std::runtime_error("failed to create descriptor pool!");
@@ -346,63 +359,67 @@ namespace lve {
     }
 
     void FirstAppRayTracing::createDescriptorSets() {
+        const size_t framesInFlight = LveSwapChain::MAX_FRAMES_IN_FLIGHT;
         VkDescriptorSetLayout layout = rayTracingPipeline->getDescriptorSetLayout();
+        std::vector<VkDescriptorSetLayout> layouts(framesInFlight, layout);
 
         VkDescriptorSetAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         allocInfo.descriptorPool = descriptorPool;
-        allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &layout;
+        allocInfo.descriptorSetCount = static_cast<uint32_t>(framesInFlight);
+        allocInfo.pSetLayouts = layouts.data();
 
-        if (vkAllocateDescriptorSets(lveDevice.device(), &allocInfo, &descriptorSet) != VK_SUCCESS) {
+        descriptorSets.resize(framesInFlight);
+        if (vkAllocateDescriptorSets(lveDevice.device(), &allocInfo, descriptorSets.data()) != VK_SUCCESS) {
             throw std::runtime_error("failed to allocate descriptor sets!");
         }
 
-        // Binding 0: TLAS
         VkAccelerationStructureKHR tlas = accelerationStructure->getTLAS();
-        VkWriteDescriptorSetAccelerationStructureKHR asInfo{};
-        asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
-        asInfo.accelerationStructureCount = 1;
-        asInfo.pAccelerationStructures = &tlas;
-
-        VkWriteDescriptorSet asWrite{};
-        asWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        asWrite.dstSet = descriptorSet;
-        asWrite.dstBinding = 0;
-        asWrite.descriptorCount = 1;
-        asWrite.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-        asWrite.pNext = &asInfo;
-
-        // Binding 1: Storage Image
-        VkDescriptorImageInfo imageInfo{};
-        imageInfo.imageView = storageImageView;
-        imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-        VkWriteDescriptorSet imageWrite{};
-        imageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        imageWrite.dstSet = descriptorSet;
-        imageWrite.dstBinding = 1;
-        imageWrite.descriptorCount = 1;
-        imageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        imageWrite.pImageInfo = &imageInfo;
-
-        // Binding 2: Sphere Info Buffer
         VkDescriptorBufferInfo sphereBufferInfo{};
         sphereBufferInfo.buffer = accelerationStructure->getSphereInfoBuffer();
         sphereBufferInfo.offset = 0;
         sphereBufferInfo.range = VK_WHOLE_SIZE;
 
-        VkWriteDescriptorSet sphereWrite{};
-        sphereWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        sphereWrite.dstSet = descriptorSet;
-        sphereWrite.dstBinding = 2;
-        sphereWrite.descriptorCount = 1;
-        sphereWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        sphereWrite.pBufferInfo = &sphereBufferInfo;
+        for (size_t i = 0; i < framesInFlight; i++) {
+            // Binding 0: TLAS
+            VkWriteDescriptorSetAccelerationStructureKHR asInfo{};
+            asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+            asInfo.accelerationStructureCount = 1;
+            asInfo.pAccelerationStructures = &tlas;
 
-        // Binding 3 (UBO) 삭제됨!
-        VkWriteDescriptorSet writes[] = { asWrite, imageWrite, sphereWrite };
-        vkUpdateDescriptorSets(lveDevice.device(), 3, writes, 0, nullptr);
+            VkWriteDescriptorSet asWrite{};
+            asWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            asWrite.dstSet = descriptorSets[i];
+            asWrite.dstBinding = 0;
+            asWrite.descriptorCount = 1;
+            asWrite.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            asWrite.pNext = &asInfo;
+
+            // Binding 1: Storage Image (frame별)
+            VkDescriptorImageInfo imageInfo{};
+            imageInfo.imageView = storageImageViews[i];
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+            VkWriteDescriptorSet imageWrite{};
+            imageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            imageWrite.dstSet = descriptorSets[i];
+            imageWrite.dstBinding = 1;
+            imageWrite.descriptorCount = 1;
+            imageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            imageWrite.pImageInfo = &imageInfo;
+
+            // Binding 2: Sphere Info Buffer
+            VkWriteDescriptorSet sphereWrite{};
+            sphereWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            sphereWrite.dstSet = descriptorSets[i];
+            sphereWrite.dstBinding = 2;
+            sphereWrite.descriptorCount = 1;
+            sphereWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            sphereWrite.pBufferInfo = &sphereBufferInfo;
+
+            VkWriteDescriptorSet writes[] = { asWrite, imageWrite, sphereWrite };
+            vkUpdateDescriptorSets(lveDevice.device(), 3, writes, 0, nullptr);
+        }
     }
 
     void FirstAppRayTracing::createCommandBuffers() {
@@ -420,7 +437,7 @@ namespace lve {
         // 미리 기록하지 않음! drawFrame에서 매 프레임 기록
     }
 
-    void FirstAppRayTracing::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+    void FirstAppRayTracing::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, uint32_t currentFrame) {
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -429,12 +446,14 @@ namespace lve {
             throw std::runtime_error("failed to begin recording command buffer!");
         }
 
+        VkImage storageImage = storageImages[currentFrame];
+
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rayTracingPipeline->getPipeline());
         vkCmdBindDescriptorSets(
             commandBuffer,
             VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
             rayTracingPipeline->getPipelineLayout(),
-            0, 1, &descriptorSet, 0, nullptr
+            0, 1, &descriptorSets[currentFrame], 0, nullptr
         );
 
         // Push Constants로 카메라 데이터 전송!
@@ -509,7 +528,7 @@ namespace lve {
         barrier2.srcAccessMask = 0;
         barrier2.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
-        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier2);
 
         // Copy
@@ -573,9 +592,11 @@ namespace lve {
         }
 
         lveSwapChain.waitForImageInFlight(imageIndex);
+        // submitCommandBuffers 안에서 currentFrame이 증가하므로 그 전에 캡처
+        uint32_t currentFrame = static_cast<uint32_t>(lveSwapChain.getCurrentFrame());
         // 매 프레임 Command Buffer 기록!
         vkResetCommandBuffer(commandBuffers[imageIndex], 0);
-        recordCommandBuffer(commandBuffers[imageIndex], imageIndex);
+        recordCommandBuffer(commandBuffers[imageIndex], imageIndex, currentFrame);
 
         result = lveSwapChain.submitCommandBuffers(&commandBuffers[imageIndex], &imageIndex);
         if (result != VK_SUCCESS) {

@@ -96,7 +96,19 @@ namespace lve {
             createInfo.ppEnabledLayerNames = validationLayers.data();
 
             populateDebugMessengerCreateInfo(debugCreateInfo);
-            createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debugCreateInfo;
+
+            // Sync validation 추가
+            VkValidationFeatureEnableEXT enables[] = {
+                VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
+            };
+            VkValidationFeaturesEXT validationFeatures{};
+            validationFeatures.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
+            validationFeatures.enabledValidationFeatureCount = 1;
+            validationFeatures.pEnabledValidationFeatures = enables;
+
+            // pNext 체인: createInfo → validationFeatures → debugCreateInfo
+            validationFeatures.pNext = &debugCreateInfo;
+            createInfo.pNext = &validationFeatures;
         }
         else {
             createInfo.enabledLayerCount = 0;
