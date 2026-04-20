@@ -105,24 +105,11 @@ namespace lve {
                 float cosTheta = std::cos(theta);
 
                 Vertex vertex;
-
-                // Normal = Position (단위 구니까!)
-                vertex.normal = glm::vec3(
+                vertex.pos = glm::vec3(
                     sinPhi * cosTheta,
                     cosPhi,
                     sinPhi * sinTheta
                 );
-
-                // Position = Normal * radius (반지름 1)
-                vertex.pos = vertex.normal;  // 원점 기준, 반지름 1
-
-                // 색깔/재질은 버퍼에서 읽을 거라 의미 없음
-                vertex.color = glm::vec3(1.0f, 1.0f, 1.0f);
-                vertex.materialType = 0.0f;
-                vertex.materialParam = 0.0f;
-                vertex.padding[0] = 0.0f;
-                vertex.padding[1] = 0.0f;
-
                 mesh.vertices.push_back(vertex);
             }
         }
@@ -255,20 +242,35 @@ namespace lve {
     void LveAccelerationStructure::createSphereInfoBuffer() {
         VkDeviceSize bufferSize = sizeof(SphereInfo) * sphereInfos.size();
 
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingMemory;
         lveDevice.createBuffer(
             bufferSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            stagingBuffer,
+            stagingMemory
+        );
+
+        void* data;
+        vkMapMemory(lveDevice.device(), stagingMemory, 0, bufferSize, 0, &data);
+        memcpy(data, sphereInfos.data(), bufferSize);
+        vkUnmapMemory(lveDevice.device(), stagingMemory);
+
+        lveDevice.createBuffer(
+            bufferSize,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             sphereInfoBuffer,
             sphereInfoMemory
         );
 
-        void* data;
-        vkMapMemory(lveDevice.device(), sphereInfoMemory, 0, bufferSize, 0, &data);
-        memcpy(data, sphereInfos.data(), bufferSize);
-        vkUnmapMemory(lveDevice.device(), sphereInfoMemory);
+        lveDevice.copyBuffer(stagingBuffer, sphereInfoBuffer, bufferSize);
 
-        std::cout << "Sphere info buffer created: " << sphereInfos.size() << " spheres" << std::endl;
+        vkDestroyBuffer(lveDevice.device(), stagingBuffer, nullptr);
+        vkFreeMemory(lveDevice.device(), stagingMemory, nullptr);
+
+        std::cout << "Sphere info buffer created: " << sphereInfos.size() << " spheres (DEVICE_LOCAL)" << std::endl;
     }
 
     void LveAccelerationStructure::createBottomLevelAS(MeshData& mesh) {

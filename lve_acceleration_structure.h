@@ -11,11 +11,6 @@ namespace lve {
 
     struct Vertex {
         glm::vec3 pos;
-        glm::vec3 normal;
-        glm::vec3 color;
-        float materialType;  // 0=Lambertian, 1=Metal, 2=Dielectric
-        float materialParam; // Metal: fuzz, Dielectric: refraction_index
-        float padding[2];    // Alignment to 16 bytes
     };
 
     // Sphere info for shader (std430 layout compatible)
