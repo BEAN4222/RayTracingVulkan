@@ -26,7 +26,8 @@ namespace lve {
         float defocus_angle;               // 4 bytes
         float focus_dist;                  // 4 bytes
         float padding;                     // 4 bytes
-    };  // 총 80 bytes
+        alignas(16) glm::vec4 background;  // 16 bytes (offset 80)
+    };  // 총 96 bytes
 
     class FirstAppRayTracing {
     public:
@@ -43,6 +44,7 @@ namespace lve {
 
     private:
         void createOneWeekendFinalScene();
+        void createCornellBoxScene();
         void createStorageImage();
         void createDescriptorPool();
         void createDescriptorSets();
@@ -87,6 +89,9 @@ namespace lve {
         float vfov;
         float defocusAngle;
         float focusDist;
+
+        // Scene background color (책의 cam.background)
+        glm::vec3 backgroundColor{ 0.70f, 0.80f, 1.00f };
 
         // Mouse state
         bool firstMouse;

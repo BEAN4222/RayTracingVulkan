@@ -10,16 +10,16 @@ struct RayPayload {
     bool scattered;
 };
 
-// Sphere info structure (matches C++ SphereInfo, std430 layout)
+// Primitive info structure (matches C++ SphereInfo, std430 layout)
 struct SphereInfo {
     vec3 center;
     float radius;
     vec3 color;
     float materialType;
     float materialParam;
+    float primitiveType;   // 0 = sphere, 1 = quad
     float padding1;
     float padding2;
-    float padding3;
 };
 
 layout(location = 0) rayPayloadInEXT RayPayload payload;
@@ -80,6 +80,7 @@ float reflectance(float cosine, float refraction_index) {
 const float MATERIAL_LAMBERTIAN = 0.0;
 const float MATERIAL_METAL = 1.0;
 const float MATERIAL_DIELECTRIC = 2.0;
+const float MATERIAL_DIFFUSE_LIGHT = 3.0;
 
 void main() {
     payload.hit = true;
@@ -94,9 +95,24 @@ void main() {
     vec3 albedo = sphere.color;
     float material_type = sphere.materialType;
     float material_param = sphere.materialParam;
-    
-    // outward_normal: always points from sphere center to surface (outward)
-    vec3 outward_normal = normalize(world_pos - sphere_center);
+
+    // DIFFUSE_LIGHT: 빛을 방출하고 산란 없이 종료 (법선 계산 불필요)
+    if (abs(material_type - MATERIAL_DIFFUSE_LIGHT) < 0.1) {
+        payload.scattered = false;
+        payload.color = albedo;   // 방출색 (1.0 이상 가능)
+        return;
+    }
+
+    // outward_normal: 프리미티브 종류에 따라 다르게 계산
+    vec3 outward_normal;
+    if (sphere.primitiveType < 0.5) {
+        // sphere: 중심에서 표면 방향
+        outward_normal = normalize(world_pos - sphere_center);
+    } else {
+        // quad: 단위 쿼드의 로컬 법선 (0,0,1)을 월드로 변환
+        // 인스턴스 변환행렬의 3번째 열 = n (= normalize(cross(u,v))), 회전도 자동 반영
+        outward_normal = normalize(gl_ObjectToWorldEXT * vec4(0.0, 0.0, 1.0, 0.0));
+    }
     
     // front_face: which side of the surface is the ray coming from?
     bool front_face = dot(gl_WorldRayDirectionEXT, outward_normal) < 0.0;

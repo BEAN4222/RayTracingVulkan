@@ -5,6 +5,7 @@
 #include <iostream>
 #include <cmath>
 #include <chrono>
+#include <gtc/matrix_transform.hpp>
 
 namespace lve {
 
@@ -81,7 +82,83 @@ namespace lve {
         accelerationStructure->addSphereMesh(glm::vec3(-4.0f, 1.0f, 0.0f), glm::vec3(0.4f, 0.2f, 0.1f), 1.0f, 0.0f, 0.0f, 32, 16);
         accelerationStructure->addSphereMesh(glm::vec3(4.0f, 1.0f, 0.0f), glm::vec3(0.7f, 0.6f, 0.5f), 1.0f, 1.0f, 0.0f, 32, 16);
 
-        std::cout << "Created " << sphereCount << " random spheres + 3 big spheres + ground" << std::endl;
+        // [임시] Phase 5 확인용 발광 쿼드 (밝게 빛나는 평면)
+        accelerationStructure->addQuad(
+            glm::vec3(-2.0f, 0.0f, -2.0f),  // Q
+            glm::vec3(4.0f, 0.0f, 0.0f),    // u
+            glm::vec3(0.0f, 4.0f, 0.0f),    // v
+            glm::vec3(4.0f, 4.0f, 4.0f),    // 방출색 (1.0 이상)
+            3.0f, 0.0f                      // diffuse_light
+        );
+
+        std::cout << "Created " << sphereCount << " random spheres + 3 big spheres + ground + 1 test quad" << std::endl;
+    }
+
+    void FirstAppRayTracing::createCornellBoxScene() {
+        std::cout << "Creating Cornell Box scene..." << std::endl;
+
+        LveAccelerationStructure* as = accelerationStructure.get();
+
+        // 박스 1개(6면)를 model 행렬을 적용해 추가하는 헬퍼
+        auto addBox = [&](const glm::vec3& bmin, const glm::vec3& bmax,
+            const glm::vec3& color, float matType, float matParam,
+            const glm::mat4& model) {
+                glm::vec3 dx(bmax.x - bmin.x, 0.0f, 0.0f);
+                glm::vec3 dy(0.0f, bmax.y - bmin.y, 0.0f);
+                glm::vec3 dz(0.0f, 0.0f, bmax.z - bmin.z);
+
+                struct Face { glm::vec3 Q, u, v; };
+                Face faces[6] = {
+                    { glm::vec3(bmin.x, bmin.y, bmax.z),  dx,  dy }, // front
+                    { glm::vec3(bmax.x, bmin.y, bmax.z), -dz,  dy }, // right
+                    { glm::vec3(bmax.x, bmin.y, bmin.z), -dx,  dy }, // back
+                    { glm::vec3(bmin.x, bmin.y, bmin.z),  dz,  dy }, // left
+                    { glm::vec3(bmin.x, bmax.y, bmax.z),  dx, -dz }, // top
+                    { glm::vec3(bmin.x, bmin.y, bmin.z),  dx,  dz }, // bottom
+                };
+                for (const Face& f : faces) {
+                    glm::vec3 Q = glm::vec3(model * glm::vec4(f.Q, 1.0f));
+                    glm::vec3 u = glm::vec3(model * glm::vec4(f.u, 0.0f));
+                    glm::vec3 v = glm::vec3(model * glm::vec4(f.v, 0.0f));
+                    as->addQuad(Q, u, v, color, matType, matParam);
+                }
+            };
+
+        glm::vec3 red(0.65f, 0.05f, 0.05f);
+        glm::vec3 white(0.73f, 0.73f, 0.73f);
+        glm::vec3 green(0.12f, 0.45f, 0.15f);
+        glm::vec3 light(15.0f, 15.0f, 15.0f);
+
+        // 5 walls + light (책 좌표 그대로)
+        as->addQuad(glm::vec3(555, 0, 0), glm::vec3(0, 555, 0), glm::vec3(0, 0, 555), green);          // 왼쪽(녹색)
+        as->addQuad(glm::vec3(0, 0, 0), glm::vec3(0, 555, 0), glm::vec3(0, 0, 555), red);              // 오른쪽(빨강)
+        as->addQuad(glm::vec3(343, 554, 332), glm::vec3(-130, 0, 0), glm::vec3(0, 0, -105), light, 3.0f); // 천장 조명
+        as->addQuad(glm::vec3(0, 0, 0), glm::vec3(555, 0, 0), glm::vec3(0, 0, 555), white);            // 바닥
+        as->addQuad(glm::vec3(555, 555, 555), glm::vec3(-555, 0, 0), glm::vec3(0, 0, -555), white);    // 천장
+        as->addQuad(glm::vec3(0, 0, 555), glm::vec3(555, 0, 0), glm::vec3(0, 555, 0), white);          // 뒷벽
+
+        // 두 박스 (회전 + 이동을 model 행렬에 구워서 전달)
+        glm::mat4 model1 = glm::translate(glm::mat4(1.0f), glm::vec3(265.0f, 0.0f, 295.0f))
+            * glm::rotate(glm::mat4(1.0f), glm::radians(15.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+        addBox(glm::vec3(0.0f), glm::vec3(165.0f, 330.0f, 165.0f), white, 0.0f, 0.0f, model1);
+
+        glm::mat4 model2 = glm::translate(glm::mat4(1.0f), glm::vec3(130.0f, 0.0f, 65.0f))
+            * glm::rotate(glm::mat4(1.0f), glm::radians(-18.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+        addBox(glm::vec3(0.0f), glm::vec3(165.0f, 165.0f, 165.0f), white, 0.0f, 0.0f, model2);
+
+        // 카메라 + 배경 (책의 cornell_box 설정)
+        backgroundColor = glm::vec3(0.0f, 0.0f, 0.0f);
+        cameraPos = glm::vec3(278.0f, 278.0f, -800.0f);
+        vfov = 40.0f;
+        defocusAngle = 0.0f;
+        focusDist = 800.0f;
+
+        glm::vec3 dir = glm::normalize(glm::vec3(278.0f, 278.0f, 0.0f) - cameraPos);
+        yaw = glm::degrees(atan2(dir.z, dir.x));
+        pitch = glm::degrees(asin(dir.y));
+        updateCameraVectors();
+
+        std::cout << "Cornell Box scene created (6 quads walls + light + 2 boxes)." << std::endl;
     }
 
     void FirstAppRayTracing::initCamera() {
@@ -208,7 +285,7 @@ namespace lve {
         initCamera();
 
         accelerationStructure = std::make_unique<LveAccelerationStructure>(lveDevice);
-        createOneWeekendFinalScene();
+        createCornellBoxScene();
         accelerationStructure->buildAccelerationStructures();
 
         rayTracingPipeline = std::make_unique<LveRayTracingPipeline>(
@@ -465,11 +542,12 @@ namespace lve {
         pushConstants.vfov = vfov;
         pushConstants.defocus_angle = defocusAngle;
         pushConstants.focus_dist = focusDist;
+        pushConstants.background = glm::vec4(backgroundColor, 1.0f);
 
         vkCmdPushConstants(
             commandBuffer,
             rayTracingPipeline->getPipelineLayout(),
-            VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+            VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR,
             0,
             sizeof(CameraPushConstants),
             &pushConstants
