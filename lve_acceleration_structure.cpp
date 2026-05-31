@@ -64,6 +64,37 @@ namespace lve {
         if (unitSphereMesh.indexBufferMemory != VK_NULL_HANDLE) {
             vkFreeMemory(lveDevice.device(), unitSphereMesh.indexBufferMemory, nullptr);
         }
+
+        // cleaning unit quad BLAS
+        if (unitQuadMesh.bottomLevelAS != VK_NULL_HANDLE)
+        {
+            vkDestroyAccelerationStructureKHR(lveDevice.device(), unitQuadMesh.bottomLevelAS, nullptr);
+        }
+
+        if (unitQuadMesh.bottomLevelASBuffer != VK_NULL_HANDLE)
+        {
+            vkDestroyBuffer(lveDevice.device(), unitQuadMesh.bottomLevelASBuffer, nullptr);
+        }
+        if (unitQuadMesh.bottomLevelASMemory != VK_NULL_HANDLE)
+        {
+            vkFreeMemory(lveDevice.device(), unitQuadMesh.bottomLevelASMemory, nullptr);
+        }
+        if (unitQuadMesh.vertexBuffer != VK_NULL_HANDLE)
+        {
+            vkDestroyBuffer(lveDevice.device(), unitQuadMesh.vertexBuffer, nullptr);
+        }
+        if (unitQuadMesh.vertexBufferMemory != VK_NULL_HANDLE) 
+        {
+            vkFreeMemory(lveDevice.device(), unitQuadMesh.vertexBufferMemory, nullptr);
+        }
+        if (unitQuadMesh.indexBuffer != VK_NULL_HANDLE) 
+        {
+            vkDestroyBuffer(lveDevice.device(), unitQuadMesh.indexBuffer, nullptr);
+        }
+        if (unitQuadMesh.indexBufferMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(lveDevice.device(), unitQuadMesh.indexBufferMemory, nullptr);
+        }
+        
     }
 
     void LveAccelerationStructure::addSphereMesh(
@@ -82,11 +113,57 @@ namespace lve {
         info.color = color;
         info.materialType = materialType;
         info.materialParam = materialParam;
+        info.primitiveType = 0.0f;  // sphere
         info.padding[0] = 0.0f;
         info.padding[1] = 0.0f;
-        info.padding[2] = 0.0f;
 
         sphereInfos.push_back(info);
+
+        // 인스턴스 변환행렬: scale(radius) + translate(center)
+        VkTransformMatrixKHR t{};
+        memset(&t, 0, sizeof(t));
+        t.matrix[0][0] = radius;
+        t.matrix[1][1] = radius;
+        t.matrix[2][2] = radius;
+        t.matrix[0][3] = center.x;
+        t.matrix[1][3] = center.y;
+        t.matrix[2][3] = center.z;
+
+        primitiveInstances.push_back({ t, false });
+    }
+
+    void LveAccelerationStructure::addQuad(
+        const glm::vec3& Q,
+        const glm::vec3& u,
+        const glm::vec3& v,
+        const glm::vec3& color,
+        float materialType,
+        float materialParam
+    ) {
+        SphereInfo info{};
+        info.center = Q;        // 보관용 (셰이더의 쿼드 경로에선 안 씀)
+        info.radius = 0.0f;
+        info.color = color;
+        info.materialType = materialType;
+        info.materialParam = materialParam;
+        info.primitiveType = 1.0f;  // quad
+        info.padding[0] = 0.0f;
+        info.padding[1] = 0.0f;
+
+        sphereInfos.push_back(info);
+
+        // 단위 쿼드(z=0, [0,1]^2) → 월드: world = a*u + b*v + Q
+        // 3x4 행렬 열 = [u | v | n | Q],  n은 행렬 비퇴화용 법선
+        glm::vec3 n = glm::normalize(glm::cross(u, v));
+
+        VkTransformMatrixKHR t{};
+        memset(&t, 0, sizeof(t));
+        t.matrix[0][0] = u.x; t.matrix[1][0] = u.y; t.matrix[2][0] = u.z;  // col 0 = u
+        t.matrix[0][1] = v.x; t.matrix[1][1] = v.y; t.matrix[2][1] = v.z;  // col 1 = v
+        t.matrix[0][2] = n.x; t.matrix[1][2] = n.y; t.matrix[2][2] = n.z;  // col 2 = n
+        t.matrix[0][3] = Q.x; t.matrix[1][3] = Q.y; t.matrix[2][3] = Q.z;  // col 3 = Q
+
+        primitiveInstances.push_back({ t, true });
     }
 
     // 단위 구 생성 (원점, 반지름 1)
@@ -105,24 +182,11 @@ namespace lve {
                 float cosTheta = std::cos(theta);
 
                 Vertex vertex;
-
-                // Normal = Position (단위 구니까!)
-                vertex.normal = glm::vec3(
+                vertex.pos = glm::vec3(
                     sinPhi * cosTheta,
                     cosPhi,
                     sinPhi * sinTheta
                 );
-
-                // Position = Normal * radius (반지름 1)
-                vertex.pos = vertex.normal;  // 원점 기준, 반지름 1
-
-                // 색깔/재질은 버퍼에서 읽을 거라 의미 없음
-                vertex.color = glm::vec3(1.0f, 1.0f, 1.0f);
-                vertex.materialType = 0.0f;
-                vertex.materialParam = 0.0f;
-                vertex.padding[0] = 0.0f;
-                vertex.padding[1] = 0.0f;
-
                 mesh.vertices.push_back(vertex);
             }
         }
@@ -148,6 +212,20 @@ namespace lve {
         return mesh;
     }
 
+    MeshData LveAccelerationStructure::createQuadMeshData()
+    {
+        MeshData mesh;
+
+        mesh.vertices.push_back({ glm::vec3(0.0f, 0.0f, 0.0f) });
+        mesh.vertices.push_back({ glm::vec3(1.0f, 0.0f, 0.0f) });
+        mesh.vertices.push_back({ glm::vec3(1.0f, 1.0f, 0.0f) });
+        mesh.vertices.push_back({ glm::vec3(0.0f, 1.0f, 0.0f) });
+
+        mesh.indices = { 0, 1, 2, 0, 2, 3 };
+        return mesh;
+    }
+
+
     void LveAccelerationStructure::buildAccelerationStructures() {
         if (sphereInfos.empty()) {
             throw std::runtime_error("No spheres added!");
@@ -172,6 +250,24 @@ namespace lve {
 
             std::cout << "Unit sphere BLAS created!" << std::endl;
         }
+        // 2. 단위 정육면체 BLAS 하나만 생성 (처음 한 번만)
+        if (!unitQuadCreated) {
+            std::cout << "Creating unit quad BLAS (single instance)..." << std::endl;
+
+            // 단위 정육면체 (모든 쿼드가 공유)
+            unitQuadMesh = createQuadMeshData();
+
+            std::cout << "Unit quad vertices: " << unitQuadMesh.vertices.size() << std::endl;
+            std::cout << "Unit quad indices: " << unitQuadMesh.indices.size() << std::endl;
+
+            uploadMeshToGPU(unitQuadMesh);
+            createBottomLevelAS(unitQuadMesh);
+            unitQuadCreated = true;
+
+            std::cout << "Unit Quad BLAS created!" << std::endl;
+        }
+
+
 
         // 2. SphereInfo 버퍼 생성
         createSphereInfoBuffer();
@@ -255,20 +351,35 @@ namespace lve {
     void LveAccelerationStructure::createSphereInfoBuffer() {
         VkDeviceSize bufferSize = sizeof(SphereInfo) * sphereInfos.size();
 
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingMemory;
         lveDevice.createBuffer(
             bufferSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            stagingBuffer,
+            stagingMemory
+        );
+
+        void* data;
+        vkMapMemory(lveDevice.device(), stagingMemory, 0, bufferSize, 0, &data);
+        memcpy(data, sphereInfos.data(), bufferSize);
+        vkUnmapMemory(lveDevice.device(), stagingMemory);
+
+        lveDevice.createBuffer(
+            bufferSize,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             sphereInfoBuffer,
             sphereInfoMemory
         );
 
-        void* data;
-        vkMapMemory(lveDevice.device(), sphereInfoMemory, 0, bufferSize, 0, &data);
-        memcpy(data, sphereInfos.data(), bufferSize);
-        vkUnmapMemory(lveDevice.device(), sphereInfoMemory);
+        lveDevice.copyBuffer(stagingBuffer, sphereInfoBuffer, bufferSize);
 
-        std::cout << "Sphere info buffer created: " << sphereInfos.size() << " spheres" << std::endl;
+        vkDestroyBuffer(lveDevice.device(), stagingBuffer, nullptr);
+        vkFreeMemory(lveDevice.device(), stagingMemory, nullptr);
+
+        std::cout << "Sphere info buffer created: " << sphereInfos.size() << " spheres (DEVICE_LOCAL)" << std::endl;
     }
 
     void LveAccelerationStructure::createBottomLevelAS(MeshData& mesh) {
@@ -372,49 +483,35 @@ namespace lve {
             throw std::runtime_error("No spheres to build TLAS!");
         }
 
-        // 단위 구 BLAS의 주소 (하나뿐!)
+        // 두 BLAS(구/쿼드)의 device address 조회
         VkAccelerationStructureDeviceAddressInfoKHR addressInfo{};
         addressInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+
         addressInfo.accelerationStructure = unitSphereMesh.bottomLevelAS;
-        VkDeviceAddress blasAddress = vkGetAccelerationStructureDeviceAddressKHR(
+        VkDeviceAddress sphereBlasAddress = vkGetAccelerationStructureDeviceAddressKHR(
             lveDevice.device(), &addressInfo);
 
-        std::vector<VkAccelerationStructureInstanceKHR> instances;
-        instances.reserve(sphereInfos.size());
+        VkDeviceAddress quadBlasAddress = 0;
+        if (unitQuadMesh.bottomLevelAS != VK_NULL_HANDLE) {
+            addressInfo.accelerationStructure = unitQuadMesh.bottomLevelAS;
+            quadBlasAddress = vkGetAccelerationStructureDeviceAddressKHR(
+                lveDevice.device(), &addressInfo);
+        }
 
-        // 각 구마다 Transform으로 위치/크기 적용!
-        for (size_t i = 0; i < sphereInfos.size(); ++i) {
-            const SphereInfo& sphere = sphereInfos[i];
+        std::vector<VkAccelerationStructureInstanceKHR> instances;
+        instances.reserve(primitiveInstances.size());
+
+        // 각 프리미티브마다 저장해 둔 변환행렬 + 알맞은 BLAS 사용
+        for (size_t i = 0; i < primitiveInstances.size(); ++i) {
+            const PrimitiveInstance& prim = primitiveInstances[i];
 
             VkAccelerationStructureInstanceKHR instance{};
-
-            // Transform Matrix 설정 (3x4 row-major)
-            // VkTransformMatrixKHR는 [3][4] 배열
-            // | m[0][0]  m[0][1]  m[0][2]  m[0][3] |   | sx  0   0   tx |
-            // | m[1][0]  m[1][1]  m[1][2]  m[1][3] | = | 0   sy  0   ty |
-            // | m[2][0]  m[2][1]  m[2][2]  m[2][3] |   | 0   0   sz  tz |
-
-            float r = sphere.radius;
-            glm::vec3 c = sphere.center;
-
-            // 초기화 (0으로)
-            memset(&instance.transform, 0, sizeof(instance.transform));
-
-            // Scale (대각선)
-            instance.transform.matrix[0][0] = r;    // scale X
-            instance.transform.matrix[1][1] = r;    // scale Y
-            instance.transform.matrix[2][2] = r;    // scale Z
-
-            // Translation (마지막 열)
-            instance.transform.matrix[0][3] = c.x;  // translate X
-            instance.transform.matrix[1][3] = c.y;  // translate Y
-            instance.transform.matrix[2][3] = c.z;  // translate Z
-
+            instance.transform = prim.transform;  // 구: scale+translate / 쿼드: [u|v|n|Q]
             instance.instanceCustomIndex = static_cast<uint32_t>(i);
             instance.mask = 0xFF;
             instance.instanceShaderBindingTableRecordOffset = 0;
             instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-            instance.accelerationStructureReference = blasAddress;  // 모두 같은 BLAS!
+            instance.accelerationStructureReference = prim.isQuad ? quadBlasAddress : sphereBlasAddress;
 
             instances.push_back(instance);
         }

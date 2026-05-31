@@ -10,9 +10,19 @@ A GPU-accelerated ray tracing project that renders photorealistic 3D scenes in r
 
 ## What It Does
 
-- **Realistic reflections, glass, and metals** — physically-based light bouncing, refraction, and material shading
+- **Realistic reflections, glass, and metals** — physically-based light bouncing, refraction, and material shading, improved with mixture densities.
 
 - **GPU-driven path tracing** — ray tracing pipeline from CPU to GPU using Vulkan's hardware-accelerated ray tracing extension
+
+## Importance Sampling & Mixture Densities result
+
+Monte Carlo integration with **mixture densities** drastically cuts noise at the same sample count. *Before* uses cosine-weighted sampling; *after* mixes in light-aware importance sampling.
+
+| Samples | Before | After |
+|:---:|:---:|:---:|
+| 10 spp | ![10 spp before](sample_10_before.png) | ![10 spp after](sample_10_after.png) |
+| 50 spp | ![50 spp before](sample_50_before.png) | ![50 spp after](sample_50_after.png) |
+
 
 ## Tech Stack
 
@@ -22,16 +32,16 @@ A GPU-accelerated ray tracing project that renders photorealistic 3D scenes in r
 
 ## Roadmap
 
-- **SVGF (Spatiotemporal Variance-Guided Filtering)** — denoise low-sample-count frames by combining spatial edge-aware filtering with temporal accumulation, producing clean images from noisy single-bounce output without waiting for thousands of samples to converge
+- ✅**Light Sources** — support for light types for richer scene lighting
 
-- **Light Sources** — support for point lights, area lights, and other light types for richer scene lighting
+- ✅**Importance Sampling with mixture densities** — shoot rays directly toward lights and mix them with cosine-weighted sampling
 
-- **Next Event Estimation (NEE)** — shoot rays directly toward lights for faster and more accurate shadow and illumination calculation
+- **Next Event Estimation (Bernhard Kerbl)** — split lighting into separate **direct** (shadow ray) and **indirect** (BRDF bounce) estimators, instead of merging both into a single mixture-density ray
 
 - **Adaptive Temporal Filtering** — Detect lighting changes via temporal gradients (A-SVGF antilag) and reduce history weight in affected regions to eliminate ghosting artifacts caused by dynamic lights
 
 ## Reference
 
-- Ray Tracing in One Weekend - Peter Shirley, Trevor David Black, Steve Hollasch (https://raytracing.github.io/)
-- Spatiotemporal Variance-Guided Filtering: Real-Time Reconstruction for Path-Traced Global Illumination (https://cg.ivd.kit.edu/publications/2017/svgf/svgf_preprint.pdf)
+- Ray Tracing in One Weekend series - Peter Shirley, Trevor David Black, Steve Hollasch (https://raytracing.github.io/)
+- Rendering: Next Event Estimation - Bernhard Kerbl, TU Wien Research Unit of Computer Graphics (https://www.cg.tuwien.ac.at/courses/Rendering/VU)
 - Gradient Estimation for Real-Time Adaptive Temporal Filtering - Christoph Schied, Christoph Peters, Carsten Dachsbacher (https://cg.ivd.kit.edu/atf.php)

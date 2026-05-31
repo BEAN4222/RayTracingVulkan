@@ -23,8 +23,6 @@ namespace lve {
         LveSwapChain(const LveSwapChain&) = delete;
         void operator=(const LveSwapChain&) = delete;
 
-        VkFramebuffer getFrameBuffer(int index) { return swapChainFramebuffers[index]; }
-        VkRenderPass getRenderPass() { return renderPass; }
         VkImageView getImageView(int index) { return swapChainImageViews[index]; }
         void recreateSwapChain();
         void cleanupSwapChain();
@@ -38,7 +36,6 @@ namespace lve {
         float extentAspectRatio() {
             return static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height);
         }
-        VkFormat findDepthFormat();
 
         VkResult acquireNextImage(uint32_t* imageIndex);
         VkResult submitCommandBuffers(const VkCommandBuffer* buffers, uint32_t* imageIndex);
@@ -50,9 +47,6 @@ namespace lve {
         void cleanupSyncObjects();
         void createSwapChain();
         void createImageViews();
-        void createDepthResources();
-        void createRenderPass();
-        void createFramebuffers();
         void createSyncObjects();
 
         // Helper functions
@@ -65,12 +59,6 @@ namespace lve {
         VkFormat swapChainImageFormat;
         VkExtent2D swapChainExtent;
 
-        std::vector<VkFramebuffer> swapChainFramebuffers;
-        VkRenderPass renderPass;
-
-        std::vector<VkImage> depthImages;
-        std::vector<VkDeviceMemory> depthImageMemorys;
-        std::vector<VkImageView> depthImageViews;
         std::vector<VkImage> swapChainImages;
         std::vector<VkImageView> swapChainImageViews;
 

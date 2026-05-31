@@ -81,9 +81,9 @@ namespace lve {
 
         // Push Constants Range 추가!
         VkPushConstantRange pushConstantRange{};
-        pushConstantRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR;
         pushConstantRange.offset = 0;
-        pushConstantRange.size = 80;  // sizeof(CameraPushConstants): 4 * vec3(16) + 4 * float(4) = 80 bytes
+        pushConstantRange.size = 96;  // sizeof(CameraPushConstants): 4*vec3(16) + 4*float(4) + vec4(16) = 96 bytes
 
         // Pipeline Layout
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};

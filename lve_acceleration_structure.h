@@ -11,21 +11,24 @@ namespace lve {
 
     struct Vertex {
         glm::vec3 pos;
-        glm::vec3 normal;
-        glm::vec3 color;
-        float materialType;  // 0=Lambertian, 1=Metal, 2=Dielectric
-        float materialParam; // Metal: fuzz, Dielectric: refraction_index
-        float padding[2];    // Alignment to 16 bytes
     };
 
-    // Sphere info for shader (std430 layout compatible)
+    // Primitive info for shader (std430 layout compatible, 48 bytes)
+    // (이름은 SphereInfo지만 구/쿼드 공용으로 사용)
     struct SphereInfo {
-        glm::vec3 center;
-        float radius;
+        glm::vec3 center;       // 구: 중심 / 쿼드: Q (셰이더에서 쿼드는 안 씀)
+        float radius;           // 구: 반지름 / 쿼드: 0
         glm::vec3 color;
         float materialType;
         float materialParam;
-        float padding[3];  // Align to 16 bytes (48 bytes total)
+        float primitiveType;    // 0 = sphere, 1 = quad
+        float padding[2];       // Align to 16 bytes (48 bytes total)
+    };
+
+    // TLAS 인스턴스 1개 분량: 변환행렬 + 어느 BLAS를 쓸지
+    struct PrimitiveInstance {
+        VkTransformMatrixKHR transform;
+        bool isQuad;
     };
 
     // Structure storing mesh data (단위 구 하나만 사용)
@@ -56,6 +59,11 @@ namespace lve {
             float materialType = 0.0f, float materialParam = 0.0f,
             int segments = 32, int rings = 16);
 
+        // Quad 추가 (Q = 시작 모서리, u/v = 두 변 벡터)
+        void addQuad(const glm::vec3& Q, const glm::vec3& u, const glm::vec3& v,
+            const glm::vec3& color,
+            float materialType = 0.0f, float materialParam = 0.0f);
+
         // Acceleration Structure build
         void buildAccelerationStructures();
 
@@ -68,6 +76,9 @@ namespace lve {
     private:
         // Helper function for sphere mesh (단위 구 생성용)
         MeshData createSphereMeshData(int segments, int rings);
+
+        // 정육면체 생성용
+        MeshData createQuadMeshData();
 
         // Upload mesh to GPU buffer
         void uploadMeshToGPU(MeshData& mesh);
@@ -87,8 +98,15 @@ namespace lve {
         MeshData unitSphereMesh;
         bool unitSphereCreated = false;
 
-        // 모든 구의 정보 (위치, 크기, 재질 등)
+        // 정육면체
+        MeshData unitQuadMesh;
+        bool unitQuadCreated = false;
+
+        // 모든 프리미티브의 정보 (위치, 크기, 재질 등) - 구/쿼드 공용, customIndex 순서
         std::vector<SphereInfo> sphereInfos;
+
+        // 각 프리미티브의 TLAS 인스턴스 정보 (sphereInfos와 동일 순서)
+        std::vector<PrimitiveInstance> primitiveInstances;
 
         // Top-Level Acceleration Structure
         VkAccelerationStructureKHR topLevelAS = VK_NULL_HANDLE;
